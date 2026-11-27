@@ -1037,6 +1037,24 @@ fn f16_nearest_on() -> bool {
     *ON.get_or_init(|| std::env::var_os("LEONIDA_F16_NEAREST").is_some_and(|v| v == "1"))
 }
 
+/// `LEONIDA_VIEW_ADDRS=1` enables address reads for descriptors selected from
+/// the view heap. Off by default until the translated ray tracing programs
+/// have been checked in a gameplay run.
+pub fn view_addrs_on() -> bool {
+    #[cfg(test)]
+    if let Some(on) = TEST_VIEW_ADDRS.get() {
+        return on;
+    }
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("LEONIDA_VIEW_ADDRS").is_some_and(|v| v == "1"))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's choice for [`view_addrs_on`], for its thread only.
+    pub(super) static TEST_VIEW_ADDRS: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
 #[cfg(test)]
 thread_local! {
     /// A test's choice for [`f16_nearest_on`], for its thread only.
@@ -2781,6 +2799,23 @@ impl<'a> Lower<'a> {
         use super::shader::USER_VIEW_ADDRESS;
         let a = self.scalar.get(&site).copied()?;
         let rp = *self.x.native.layout.get(a.param)?;
+        let count = match self.x.p.blocks.get(site.0)?.insts.get(site.1)?.name()
+            .strip_prefix("s_load_dword")?
+        {
+            "" => 1,
+            "x2" => 2,
+            "x4" => 4,
+            "x8" => 8,
+            "x16" => 16,
+            _ => return None,
+        };
+        // The switch exposes the title address for computed heap indices,
+        // including descriptor loads whose byte offsets are not 32-byte
+        // aligned. `heap_index` floors those offsets to their descriptor slot.
+        if rp.root == RootType::ResourceHeap && view_addrs_on() && count <= 4 {
+            return self.slot_view_address(site);
+        }
+        // Main's combined stride/address table handles aligned heap slots.
         if rp.root == RootType::ResourceHeap && a.offset % 32 == 0 {
             return self.slot_view_address(site);
         }

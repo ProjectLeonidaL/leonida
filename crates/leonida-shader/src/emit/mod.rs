@@ -119,12 +119,13 @@ use crate::{ShaderError, io, ir, resource, structure};
 pub use bitcode::census;
 pub use independent::{INDEPENDENT_WAVE_SPACE, IndependentWaves};
 pub use sampler::StaticSampler;
-pub use lower::set_host_max_wave;
+pub use lower::{set_host_max_wave, view_addrs_on};
 pub use rect::rect_list_gs;
 pub use shader::{
     MEMORY_FAULTS, MEMORY_PAGES, ROOT_CBV_SPACE, SAMPLER_SPACE, SLOT_FAULTS, SLOT_MEMORY,
     SLOT_STRIDES, SLOT_STRIDES_COUNT, SLOT_STRIDES_DWORDS, SLOT_VIEW_ADDRESSES, USER_DATA_SPACE,
-    USER_MEMORY_BASE, USER_VIEW_ADDRESS, USER_VIEW_BIAS, set_view_heap_limit, view_heap_limit,
+    USER_MEMORY_BASE, USER_VIEW_ADDRESS, USER_VIEW_BIAS,
+    set_view_heap_limit, view_heap_limit,
 };
 
 /// The loop limit without an override: 2^20.

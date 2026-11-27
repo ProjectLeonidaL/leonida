@@ -1,10 +1,19 @@
 //! The address of a buffer view picked from the view heap, read from the
-//! host's table by heap slot (`SLOT_VIEW_ADDRESSES`).
+//! host's per-slot address table in `SLOT_STRIDES`.
 
 use super::tests::{lower_with, root};
 use crate::native::RootType;
 
 const S_ENDPGM: u32 = 0xBF81_0000;
+
+#[test]
+fn view_address_switch_can_be_disabled_and_enabled_per_test() {
+    let was = super::TEST_VIEW_ADDRS.replace(Some(false));
+    assert!(!super::view_addrs_on());
+    super::TEST_VIEW_ADDRS.set(Some(true));
+    assert!(super::view_addrs_on());
+    super::TEST_VIEW_ADDRS.set(was);
+}
 
 #[test]
 fn a_view_picked_from_the_heap_for_its_address_reads_it_from_the_host() {
@@ -27,6 +36,8 @@ fn a_view_picked_from_the_heap_for_its_address_reads_it_from_the_host() {
         root(RootType::ResourceHeap, 0, 0),
         root(RootType::Constants, 1, 1),
     ];
+    let was = super::TEST_VIEW_ADDRS.replace(Some(true));
     let l = lower_with(&words, layout, vec![]).unwrap();
+    super::TEST_VIEW_ADDRS.set(was);
     assert!(l.root_srvs.contains(&super::super::shader::SLOT_STRIDES));
 }
