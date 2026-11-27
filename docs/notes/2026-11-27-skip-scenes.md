@@ -5,7 +5,7 @@ cutscenes, each skipped by holding Enter, and the run only tapped Enter for 0.2 
 5 to 7 fps how long Enter has to stay down in real time changes from run to run, so no fixed tap
 length works.
 
-`LEONIDA_SKIP_SCENES=1` (diagnostics builds only, off unless set) looks at the presented picture
+`LEONIDA_SKIP_SCENES=1` (every build, off unless set) looks at the presented picture
 instead. From the world's first frame on (the first that ran 500 draws or more), every 8th presented
 frame has eight full-width rows copied into a small readback buffer by the present's own list: three
 in the top bar (1%, 2.5% and 4% of the height), two in the bottom bar (98% and 99%) and three in the
@@ -28,14 +28,49 @@ wants a fresh press gets one. The first press lasts 48 frames and every next one
 twice as long, up to 384: how long a skip wants Enter down is not known, and one length that is
 too short every time would never skip. A hold that goes 1200 frames without a black sample stops,
 and is not taken up again before an open or a black sample: a letterbox Enter cannot skip, and
-the cutscene after its fade is held again. The held Enter joins the keys of
-`LEONIDA_KEYS`, so it reaches both the keyboard and the pad button the stand-in pad maps Enter to.
+the cutscene after its fade is held again. The held Enter joins the scripted keys
+(with `LEONIDA_KEYS` in a diagnostics build), so it reaches both the keyboard and the pad button
+the stand-in pad maps Enter to.
 The log has one line when a hold starts and one when it ends, with the seconds held; no picture
 data.
 
 `measure-run.ps1 -SkipScenes` turns it on. Without it a run is as before, so measurements of the
 opening cutscene (R-9, P-9) don't change. The taps stay as they were (the start screen needs them),
 and `summary.txt` has a new `cutscenes_held` line.
+
+## In every build
+
+The skipper was first only in the diagnostics build. It is now in the plain release build too
+(`run-gta6.ps1`, the launcher, `leonida run`), still off unless `LEONIDA_SKIP_SCENES=1`. Only what
+it needs is built in: the sampling in `leonida-gpu/src/skip.rs`, its calls at the present, and the
+held Enter in the input code. `LEONIDA_KEYS` and the other debugging aids stay diagnostics-only.
+The held Enter goes the same way in both builds: into the keys the title reads and onto the first
+pad's button for Enter.
+
+Switched off, each present checks the switch (read from the environment once) and skips the rest;
+the input code reads one flag that stays false. Nothing is copied, allocated or logged.
+
+A player turns it on without setting anything by hand: a file `gpu-profiles.local.json` beside
+`leonida.toml` (normally the repository's folder) with
+
+```json
+{
+  "profiles": [
+    { "name": "skip-scenes", "env": { "LEONIDA_SKIP_SCENES": "1" } }
+  ]
+}
+```
+
+A local profile with no `match` applies on every card while profiles are picked automatically, and
+the program sets its switches before the graphics start. If the file is already there, the object
+goes into its `profiles` list. Deleting the object turns skipping off again. An explicit
+`LEONIDA_SKIP_SCENES` in the environment still wins over the profile.
+
+Profiles are not picked automatically when `[graphics]` in `leonida.toml` has a `profiles` line or
+`LEONIDA_PROFILE` names profiles: then `skip-scenes` has to be in that list. With
+`LEONIDA_GRAPHICS_OFF=1` (a measurement run with the speed switches off) no profile applies, this
+one included. The line `graphics card: ...; profiles: ...` the program prints at start lists
+`skip-scenes` when it is on.
 
 ## Where the numbers come from
 
@@ -68,3 +103,5 @@ game ran at about 4 fps while Enter was held.
 - Enter stays held for up to three samples (about 24 frames) after a cutscene ends.
 - The cost of the row copies was not measured. They are about 8 rows of 15 KB at 3840 wide every
   8th frame, recorded into a list that is sent anyway, and never waited for.
+- The release build with the switch on has not been run with the game yet; the figures above are
+  from the diagnostics build. The code it runs is the same.

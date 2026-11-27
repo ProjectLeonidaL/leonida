@@ -1,9 +1,11 @@
-//! Cutscene skipping for unattended runs: with `LEONIDA_SKIP_SCENES=1` (off
-//! unless set, builds with diagnostics only), a few rows of the presented
-//! picture are read back every [`EVERY`] frames from the world's first frame
-//! on (the first that ran 500 draws or more), and while they show a
-//! letterboxed picture Enter is held ([`hold_enter`], which the scripted keys
-//! of `leonida-hle` add, and with them the stand-in pad's button for Enter).
+//! Cutscene skipping, for unattended runs and players alike: with
+//! `LEONIDA_SKIP_SCENES=1` (off unless set, in every build), a few rows of the
+//! presented picture are read back every [`EVERY`] frames from the world's
+//! first frame on (the first that ran 500 draws or more), and while they show
+//! a letterboxed picture Enter is held ([`hold_enter`], which the scripted
+//! keys of `leonida-hle` add, and with them the stand-in pad's button for
+//! Enter). Switched off, the present path checks the switch once a frame (read
+//! from the environment once) and does nothing else.
 //!
 //! The title's opening is several cutscenes, each skipped by holding Enter
 //! for a while; at 5 to 7 fps the fixed taps of `LEONIDA_KEYS` were too short
@@ -15,9 +17,9 @@
 //! the card. No pixel leaves this module; the log says when a hold begins
 //! and ends.
 
-#[cfg(all(windows, feature = "diagnostics"))]
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::*;
-#[cfg(all(windows, feature = "diagnostics"))]
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::*;
 
 /// Every how many presented frames the picture is sampled.
@@ -210,20 +212,21 @@ impl Skipper {
     }
 }
 
-#[cfg(all(windows, feature = "diagnostics"))]
+#[cfg(windows)]
 pub use run::hold_enter;
-#[cfg(all(windows, feature = "diagnostics"))]
-pub(crate) use run::{landed, present, record, sent};
+#[cfg(windows)]
+pub(crate) use run::{landed, on, present, record, sent};
 
-#[cfg(all(windows, feature = "diagnostics"))]
+#[cfg(windows)]
 mod run {
     use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
     use super::*;
 
-    /// `LEONIDA_SKIP_SCENES=1` turns the skipping on (see the module).
-    fn on() -> bool {
+    /// `LEONIDA_SKIP_SCENES=1` turns the skipping on (see the module); any
+    /// other value or none leaves it off. Read once.
+    pub(crate) fn on() -> bool {
         static ON: OnceLock<bool> = OnceLock::new();
         *ON.get_or_init(|| std::env::var_os("LEONIDA_SKIP_SCENES").is_some_and(|v| v == "1"))
     }

@@ -8478,13 +8478,10 @@ impl Host {
             let probe = if slot.is_some() { None } else { crate::capture::probe(&self.device, list, texture) };
             // `LEONIDA_SKIP_SCENES`: a sample whose list has finished is
             // judged, and a new one recorded when due.
-            #[cfg(feature = "diagnostics")]
-            let sampled = {
+            let sampled = crate::skip::on() && {
                 crate::skip::landed(FINISHED.load(Ordering::Acquire));
                 crate::skip::record(&self.device, list, texture, frame)
             };
-            #[cfg(not(feature = "diagnostics"))]
-            let _ = frame;
             list.ResourceBarrier(&[
                 transition(texture, D3D12_RESOURCE_STATE_COPY_SOURCE, state),
                 transition(
@@ -8505,13 +8502,10 @@ impl Host {
                     0
                 }
             };
-            #[cfg(feature = "diagnostics")]
             if sampled {
                 crate::skip::sent(flown);
                 crate::skip::landed(FINISHED.load(Ordering::Acquire));
             }
-            #[cfg(not(feature = "diagnostics"))]
-            let _ = flown;
             #[cfg(feature = "diagnostics")]
             if let Some((buffer, footprint)) = capture {
                 crate::capture::save_read_back(frame, &buffer, &footprint);
