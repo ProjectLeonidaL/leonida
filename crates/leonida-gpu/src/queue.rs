@@ -653,6 +653,7 @@ fn wake() {
 #[cfg(windows)]
 fn worker() {
     crate::framelog::keep_on_fast_cores("leonida-submit");
+    crate::framelog::raise_helper("leonida-submit");
     loop {
         {
             let mut work = lock(&WORK.0);
