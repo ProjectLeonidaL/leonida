@@ -163,12 +163,18 @@ fn subdir(root: &Path, sub: &str) -> Result<PathBuf> {
 
 /// `%LOCALAPPDATA%/leonida/<name>` (elsewhere the XDG or home cache).
 fn default_dir(name: &str) -> Result<PathBuf> {
+    Ok(user_dir()?.join(name))
+}
+
+/// `%LOCALAPPDATA%/leonida` (elsewhere the XDG or home cache), whatever
+/// `LEONIDA_DATA_DIR` or leonida.toml say.
+pub fn user_dir() -> Result<PathBuf> {
     let base = std::env::var_os("LOCALAPPDATA")
         .or_else(|| std::env::var_os("XDG_CACHE_HOME"))
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
         .context("cannot determine a user directory; set LEONIDA_CACHE_DIR and LEONIDA_DATA_DIR")?;
-    Ok(base.join("leonida").join(name))
+    Ok(base.join("leonida"))
 }
 
 /// The config file: `LEONIDA_CONFIG`, else `./leonida.toml`.
