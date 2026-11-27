@@ -243,6 +243,57 @@ pub fn keep_on_fast_cores(what: &str) {
     }
 }
 
+/// The priority `LEONIDA_HELPER_PRIORITY` asks for: above normal with `1`;
+/// otherwise none, and the thread keeps the normal priority it was made with.
+fn helper_priority_of(value: Option<&str>) -> Option<i32> {
+    use windows_sys::Win32::System::Threading::THREAD_PRIORITY_ABOVE_NORMAL;
+    (value.map(str::trim) == Some("1")).then_some(THREAD_PRIORITY_ABOVE_NORMAL)
+}
+
+/// Raises the calling thread above normal, ahead of the title's threads, with
+/// `LEONIDA_HELPER_PRIORITY=1` (off by default). Called by the threads of ours
+/// a frame waits for: the submit thread (`LEONIDA_ASYNC_SUBMIT=1`), the relay
+/// and late-wait threads, and the wide threads that share the submitting
+/// thread's copies and compares (`shadow::wide`).
+///
+/// From readmet3xt-lab/foxhound, commits 002cf4a and 80c70b7. A frame's
+/// timeline there had such threads woken and not running yet for 4 to 11 ms
+/// of the chain the present came out of, while the title's own workers held
+/// every processor. On an i5-12400F with an RTX 3060 (Series S at 540p, off /
+/// on in one run): 8.6 / 9.6 fps, refreshes 23.1 / 17.6 ms a frame, the card
+/// idle behind the submitting thread 24.7 / 13.2 ms. Their submit thread runs
+/// above normal in any case; ours only with the switch.
+///
+/// The threads that translate lists (`LEONIDA_THIN=1`) stay at normal, as in
+/// 80c70b7: there are eight of them, and above normal they could hold every
+/// core of an eight-core processor ahead of the title's recording threads (a
+/// guess, not measured).
+pub fn raise_helper(what: &str) {
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority};
+    static PRIORITY: std::sync::OnceLock<Option<i32>> = std::sync::OnceLock::new();
+    let priority = *PRIORITY.get_or_init(|| {
+        let value = std::env::var("LEONIDA_HELPER_PRIORITY").ok();
+        let priority = helper_priority_of(value.as_deref());
+        if priority.is_some() {
+            tracing::info!(
+                "our threads a frame waits for run above normal (LEONIDA_HELPER_PRIORITY=1)"
+            );
+        }
+        priority
+    });
+    let Some(priority) = priority else {
+        return;
+    };
+    // SAFETY: this thread's own priority.
+    if unsafe { SetThreadPriority(GetCurrentThread(), priority) } == 0 {
+        tracing::warn!(
+            what,
+            error = %std::io::Error::last_os_error(),
+            "the thread's priority could not be raised"
+        );
+    }
+}
+
 /// Asks the system to run the calling thread on the slow cores only, where
 /// the processor has two kinds and at least eight slow logical processors
 /// (a helper that must not take a fast core from the title's threads).
@@ -603,6 +654,17 @@ pub fn frame() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_one_raises_the_helpers() {
+        use windows_sys::Win32::System::Threading::THREAD_PRIORITY_ABOVE_NORMAL;
+        assert_eq!(helper_priority_of(Some("1")), Some(THREAD_PRIORITY_ABOVE_NORMAL));
+        assert_eq!(helper_priority_of(Some(" 1 ")), Some(THREAD_PRIORITY_ABOVE_NORMAL));
+        assert_eq!(helper_priority_of(None), None);
+        assert_eq!(helper_priority_of(Some("0")), None);
+        assert_eq!(helper_priority_of(Some("2")), None);
+        assert_eq!(helper_priority_of(Some("on")), None);
+    }
 
     fn frame(number: u64, ms: f64) -> Frame {
         let mut f = Frame { number, at: number as f64, us: ms * 1e3, t: [0.0; N], s: [0.0; S], h: [0.0; HN] };
