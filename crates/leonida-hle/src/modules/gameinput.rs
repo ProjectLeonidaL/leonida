@@ -1144,13 +1144,12 @@ mod host {
                 return None;
             }
             self.empty_until[slot] = None;
-            #[allow(unused_mut)]
             let mut pad = convert(&state.Gamepad);
-            // The scripted keys (`LEONIDA_KEYS`) also press the first
-            // pad's buttons, by the stand-in pad's table: with a real pad
-            // connected the stand-in is not there, and a title that listens
-            // to the pad (the title's start screen) saw nothing.
-            #[cfg(feature = "diagnostics")]
+            // The scripted keys (`LEONIDA_KEYS`, `LEONIDA_SKIP_SCENES`) also
+            // press the first pad's buttons, by the stand-in pad's table:
+            // with a real pad connected the stand-in is not there, and a
+            // title that listens to the pad (the title's start screen) saw
+            // nothing.
             if slot == 0 {
                 for vk in scripted() {
                     if let Some(&(_, button)) = super::FALLBACK_BUTTONS.iter().find(|(key, _)| *key == vk) {
@@ -1162,10 +1161,7 @@ mod host {
         }
 
         fn keys(&mut self) -> Vec<KeyState> {
-            #[cfg(feature = "diagnostics")]
             let mut down = scripted();
-            #[cfg(not(feature = "diagnostics"))]
-            let mut down = Vec::new();
             if focused() {
                 // Left/right modifier keys only, as devices report them; no
                 // mouse buttons (below 0x08).
@@ -1198,14 +1194,27 @@ mod host {
         }
     }
 
+    /// Keys pressed with or without focus: those of `LEONIDA_KEYS`
+    /// (diagnostics builds only, `keyed`), and in every build with
+    /// `LEONIDA_SKIP_SCENES=1` Enter while the picture shows a cutscene
+    /// (`leonida_gpu::skip`). Neither set: empty, nothing allocated.
+    fn scripted() -> Vec<u8> {
+        #[cfg(feature = "diagnostics")]
+        let mut down = keyed();
+        #[cfg(not(feature = "diagnostics"))]
+        let mut down = Vec::new();
+        if leonida_gpu::skip::hold_enter() && !down.contains(&0x0D) {
+            down.push(0x0D);
+        }
+        down
+    }
+
     /// Debugging aid: `LEONIDA_KEYS=<seconds>:<key>,...` holds each key for
     /// 0.2 s that long after input starts, with or without focus. A key is a
     /// letter, a digit, or `Enter`, `Esc`, `Tab`, `Back`, `Up`, `Down`,
     /// `Left`, `Right` (the stand-in pad's table maps them to buttons).
-    /// With `LEONIDA_SKIP_SCENES=1`, also Enter while the picture shows a
-    /// cutscene (`leonida_gpu::skip`).
     #[cfg(feature = "diagnostics")]
-    fn scripted() -> Vec<u8> {
+    fn keyed() -> Vec<u8> {
         static SCRIPT: LazyLock<(Instant, Vec<(Duration, u8)>)> = LazyLock::new(|| {
             let list = std::env::var("LEONIDA_KEYS").unwrap_or_default();
             let keys = list.split(',').filter_map(|entry| {
@@ -1233,15 +1242,10 @@ mod host {
         });
         let (start, keys) = &*SCRIPT;
         let now = start.elapsed();
-        let mut down: Vec<u8> = keys
-            .iter()
+        keys.iter()
             .filter(|&&(at, _)| (at..at + Duration::from_millis(200)).contains(&now))
             .map(|&(_, vk)| vk)
-            .collect();
-        if leonida_gpu::skip::hold_enter() && !down.contains(&0x0D) {
-            down.push(0x0D);
-        }
-        down
+            .collect()
     }
 
     /// The foreground window is one of ours (the title's or our fallback).

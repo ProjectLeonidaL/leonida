@@ -1591,10 +1591,14 @@ fn present_now(this: This, planes: u32, plane_parameters: *const Plane) -> HRESU
         crate::capture::frame_drew(frame, crate::draw::drawn());
         crate::renderdoc::frame_drew(frame, crate::draw::drawn());
         crate::shot::present(frame, crate::draw::drawn());
-        crate::skip::present(frame, crate::draw::drawn());
         if crate::capture::listed(frame) {
             crate::capture::dump_targets(frame);
         }
+    }
+    // `LEONIDA_SKIP_SCENES`, in every build, not only with diagnostics.
+    #[cfg(windows)]
+    if crate::skip::on() {
+        crate::skip::present(frame, crate::draw::drawn());
     }
     // The state the lists leave the texture in is known once they are
     // translated (with `LEONIDA_WAIT_FORCE=0` nothing above waited for it).

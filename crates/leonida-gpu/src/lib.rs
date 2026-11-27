@@ -24,7 +24,7 @@ mod cardmeter;
 mod renderdoc;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod shot;
-#[cfg(any(all(windows, feature = "diagnostics"), test))]
+#[cfg(any(windows, test))]
 pub mod skip;
 pub mod console;
 #[cfg(all(windows, feature = "diagnostics"))]
