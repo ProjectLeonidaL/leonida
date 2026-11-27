@@ -364,9 +364,11 @@ thread_local! {
 /// waves on a host of 32 (LDS read and written in one lane branch, cross-lane code where not
 /// every lane runs) gets the per-lane branches around those places taken by every thread of
 /// the group where that is exact (`lower::forced_wide`), in groups of any size, so that its
-/// group barriers stand where every thread arrives. Off by default: new barriers, untried in
-/// a game run.
-fn group_wide_on() -> bool {
+/// group barriers stand where every thread arrives. It also lets a descriptor joined after a
+/// lane branch be traced by the lanes that run its access (`resource`), which the forms of the
+/// program without early-outs and skips need. Off by default: new barriers, untried in a game
+/// run.
+pub(crate) fn group_wide_on() -> bool {
     #[cfg(test)]
     if let Some(on) = TEST_GROUP_WIDE.get() {
         return on;
@@ -535,7 +537,8 @@ fn emit_legacy(
                         forms[0].1.as_ref().map(|f| &f.0),
                         Some(p),
                     ];
-                    if let Some(base) = bases.into_iter().flatten().next() {
+                    // (a form that fails in another way may leave the next one to succeed)
+                    for base in bases.into_iter().flatten() {
                         let again = widen(c, native, base, why);
                         report("wave-wide branches", &again);
                         if done(&again) {
