@@ -84,17 +84,19 @@ If you just want to play and don't want to build anything:
 3. Double-click `leonida.exe` in the `leonida` folder. If Windows says it protected your PC,
    click **More info**, then **Run anyway** (the file is not signed). On Windows 11 with Smart
    App Control on, Windows blocks it outright and shows no **Run anyway**.
-4. The first time, it asks for the folder of your copy of the game: drag that folder from File
-   Explorer into the window and press Enter. Then press Enter to warm up the shader cache, and the
-   game starts.
+4. The first time, it looks for your copy of the game in the usual places (`XboxGames`, the top
+   two folder levels of each drive, Downloads and Desktop) and asks whether to use what it found.
+   If it finds nothing, drag the game's folder from File Explorer into the window and press Enter.
+   Then press Enter to warm up the shader cache, and the game starts.
 
 You need Windows 10/11 x64, a CPU with AVX2 and a Direct3D 12 graphics card with shader model 6.6
 and mesh shaders. When the game closes, or something goes wrong, the window says what happened and
 waits for Enter.
 
-**Updating a ready-made build:** download the newest Build zip, unpack it, and copy `leonida.toml`
-from your old `leonida` folder into the new one (it holds your game folder and settings). Saves
-stay in `%LOCALAPPDATA%\leonida` either way. To find out whether there is a newer build, check
+**Updating a ready-made build:** download the newest Build zip and unpack it. From this build on,
+a new build remembers your game folder (or finds it); copy `leonida.toml` from your old `leonida`
+folder into the new one only if you changed settings in it. Saves stay in `%LOCALAPPDATA%\leonida`
+either way. To find out whether there is a newer build, check
 [Releases](https://github.com/ProjectLeonidaL/leonida/releases) for a higher Build number.
 
 ## Getting started

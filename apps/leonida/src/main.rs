@@ -4,6 +4,7 @@
 //! the user's cache directory (outside the repository).
 
 mod census;
+mod find;
 mod graphics;
 mod inspect;
 mod play;
@@ -246,8 +247,7 @@ fn main() -> Result<()> {
             }
             if let Some(dir) = game_dir {
                 check_game_dir(&dir)?;
-                let saved = leonida_core::Config::save_game_dir(&dir)?;
-                println!("game folder saved to {}", saved.display());
+                save_game_dir(&dir)?;
             }
             show_config()
         }
@@ -302,9 +302,24 @@ fn read_game_dir() -> Result<PathBuf> {
             println!("{e:#}, try again:");
             continue;
         }
-        let saved = leonida_core::Config::save_game_dir(&dir)?;
-        println!("game folder saved to {}", saved.display());
+        save_game_dir(&dir)?;
         return Ok(dir);
+    }
+}
+
+/// Saves `dir` to the config file, and remembers it.
+fn save_game_dir(dir: &Path) -> Result<()> {
+    let saved = leonida_core::Config::save_game_dir(dir)?;
+    println!("game folder saved to {}", saved.display());
+    remember_game_dir(dir);
+    Ok(())
+}
+
+/// Remembers `dir` for later builds, whose leonida.exe is unpacked to another
+/// folder.
+fn remember_game_dir(dir: &Path) {
+    if let Err(e) = find::remember(dir) {
+        println!("WARNING: a later build will not know this folder ({e:#})");
     }
 }
 

@@ -103,8 +103,9 @@ fn play() -> Result<ExitStatus> {
     leonida(&["run", "--execute"], &dir, true)
 }
 
-/// The configured game folder if it has a MicrosoftGame.config, else the
-/// one the player gives (saved to leonida.toml).
+/// The configured game folder if it has a MicrosoftGame.config, else the one
+/// an earlier build used, else one found on this PC or given by the player
+/// (saved to leonida.toml). The folder used is remembered.
 fn game_dir() -> Result<PathBuf> {
     let cfg = leonida_core::Config::load().context(
         "leonida.toml in this folder could not be read; correct it, or delete it to be \
@@ -113,6 +114,7 @@ fn game_dir() -> Result<PathBuf> {
     if let Some(dir) = &cfg.game_dir {
         if dir.join("MicrosoftGame.config").is_file() {
             println!("Game folder: {}", dir.display());
+            crate::remember_game_dir(dir);
             return Ok(dir.clone());
         }
         println!(
@@ -120,11 +122,66 @@ fn game_dir() -> Result<PathBuf> {
             dir.display()
         );
     }
+    if let Some(dir) = crate::find::remembered() {
+        println!("Game folder: {}", dir.display());
+        if cfg.game_dir.is_some()
+            && let Err(e) = crate::save_game_dir(&dir)
+        {
+            println!("WARNING: {e:#}");
+        }
+        return Ok(dir);
+    }
+    println!("Looking for the game on this PC...");
+    let found: Vec<PathBuf> = crate::find::game_dirs(crate::find::TITLE_ID)
+        .into_iter()
+        .filter(|dir| crate::check_game_dir(dir).is_ok())
+        .collect();
+    if found.is_empty() {
+        println!("The game was not found.");
+    }
+    if let Some(dir) = choose(&found) {
+        crate::save_game_dir(&dir)?;
+        return Ok(dir);
+    }
     println!(
         "Enter the folder of your copy of the game (the one with MicrosoftGame.config in it)."
     );
     println!("You can drag the folder from File Explorer into this window, then press Enter:");
     crate::read_game_dir()
+}
+
+/// The found folder the player agrees to use, if any.
+fn choose(found: &[PathBuf]) -> Option<PathBuf> {
+    match found {
+        [] => None,
+        [dir] => {
+            ask_yes(&format!("Found the game in {}. Use it?", dir.display())).then(|| dir.clone())
+        }
+        _ => {
+            println!("Found the game in more than one folder:");
+            for (i, dir) in found.iter().enumerate() {
+                println!("  {}. {}", i + 1, dir.display());
+            }
+            loop {
+                print!("Enter the number of the one to use, or 0 to enter a folder: ");
+                let _ = std::io::stdout().flush();
+                let mut line = String::new();
+                if std::io::stdin().lock().read_line(&mut line).unwrap_or(0) == 0 {
+                    return None;
+                }
+                match pick(&line, found.len()) {
+                    Some(0) => return None,
+                    Some(n) => return Some(found[n - 1].clone()),
+                    None => println!("Type a number from 0 to {}.", found.len()),
+                }
+            }
+        }
+    }
+}
+
+/// The number typed, if it is 0 to `count`.
+fn pick(answer: &str, count: usize) -> Option<usize> {
+    answer.trim().parse().ok().filter(|n| *n <= count)
 }
 
 /// Runs this program again in this window with `args`, for the game in
@@ -253,7 +310,7 @@ mod tests {
     use std::path::Path;
     use std::process::ExitStatus;
 
-    use super::{is_temporary, is_yes, stopped_by_ctrl_c, title};
+    use super::{is_temporary, is_yes, pick, stopped_by_ctrl_c, title};
 
     #[test]
     fn ctrl_c_is_its_exit_code() {
@@ -277,6 +334,15 @@ mod tests {
         }
         for answer in ["n", "no\r\n", "N", "yep", "x"] {
             assert!(!is_yes(answer), "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn a_pick_is_a_listed_number_or_zero() {
+        assert_eq!(pick("0\r\n", 2), Some(0));
+        assert_eq!(pick(" 2 ", 2), Some(2));
+        for answer in ["", "3", "-1", "one"] {
+            assert_eq!(pick(answer, 2), None, "{answer:?}");
         }
     }
 
