@@ -28,8 +28,9 @@ wants a fresh press gets one. The first press lasts 48 frames and every next one
 twice as long, up to 384: how long a skip wants Enter down is not known, and one length that is
 too short every time would never skip. A hold that goes 1200 frames without a black sample stops,
 and is not taken up again before an open or a black sample: a letterbox Enter cannot skip, and
-the cutscene after its fade is held again. The held Enter joins the keys of
-`LEONIDA_KEYS`, so it reaches both the keyboard and the pad button the stand-in pad maps Enter to.
+the cutscene after its fade is held again. The held Enter joins the scripted keys
+(with `LEONIDA_KEYS` in a diagnostics build), so it reaches both the keyboard and the pad button
+the stand-in pad maps Enter to.
 The log has one line when a hold starts and one when it ends, with the seconds held; no picture
 data.
 
@@ -60,10 +61,16 @@ A player turns it on without setting anything by hand: a file `gpu-profiles.loca
 }
 ```
 
-A local profile with no `match` applies on every card, and the program sets its switches before
-the graphics start. If the file is already there, the object goes into its `profiles` list.
-Deleting the object turns skipping off again. An explicit `LEONIDA_SKIP_SCENES` in the environment
-still wins over the profile.
+A local profile with no `match` applies on every card while profiles are picked automatically, and
+the program sets its switches before the graphics start. If the file is already there, the object
+goes into its `profiles` list. Deleting the object turns skipping off again. An explicit
+`LEONIDA_SKIP_SCENES` in the environment still wins over the profile.
+
+Profiles are not picked automatically when `[graphics]` in `leonida.toml` has a `profiles` line or
+`LEONIDA_PROFILE` names profiles: then `skip-scenes` has to be in that list. With
+`LEONIDA_GRAPHICS_OFF=1` (a measurement run with the speed switches off) no profile applies, this
+one included. The line `graphics card: ...; profiles: ...` the program prints at start lists
+`skip-scenes` when it is on.
 
 ## Where the numbers come from
 

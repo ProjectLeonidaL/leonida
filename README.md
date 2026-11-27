@@ -274,8 +274,11 @@ that pipeline from ever reaching the driver (its draws are dropped).
 
 To skip the opening's cutscenes (off by default, in every build), put this in a file named
 `gpu-profiles.local.json` beside your `leonida.toml`, normally in the checkout, and start the game as usual. If the
-file already exists, add only the object to its `profiles` list; delete it to turn skipping off. While a
-letterboxed cutscene shows, Enter is held for you ([details](docs/notes/2026-11-27-skip-scenes.md)).
+file already exists, add only the object to its `profiles` list; delete that object to turn skipping off. If the
+`[graphics]` section of your `leonida.toml` has a `profiles` line, add `"skip-scenes"` to that list too, or it is
+left out. The game's console window lists `skip-scenes` after `profiles:` when it is on. While a letterboxed
+cutscene shows, Enter is held for you ([details](docs/notes/2026-11-27-skip-scenes.md)). A measurement run with
+the speed switches off leaves every profile out, this one too.
 
 ```json
 {

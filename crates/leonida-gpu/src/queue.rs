@@ -1595,7 +1595,7 @@ fn present_now(this: This, planes: u32, plane_parameters: *const Plane) -> HRESU
             crate::capture::dump_targets(frame);
         }
     }
-    // `LEONIDA_SKIP_SCENES`, in every build, not only with diagnostics.
+    // `LEONIDA_SKIP_SCENES`: whether Enter is held from this present on.
     #[cfg(windows)]
     if crate::skip::on() {
         crate::skip::present(frame, crate::draw::drawn());
