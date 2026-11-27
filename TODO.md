@@ -30,6 +30,7 @@ The goal: a console-like experience on PC. The game starts straight into play, h
 | R-7 | Shaders that don't translate drop their draws. Count them again on this tree with `leonida translate --list` (the upstream counts in the fork notes are from 2026-11-23) and work down the list. Counted 2026-11-26 in the fork notes: the 195 `GS_VoxelizeGeneric` failures drop no draws (geometry programs are never translated); the 5 `CS_TraceShadowRays_*` need view addresses by heap slot from `leonida-gpu`. | `leonida-shader` | game |
 | R-8 | Mapping pool pages in a row as one view made remaps cheaper but broke texture streaming (black or red faces, garbage in 3 of 3 runs). Find out why before trying it again; see P-4. | `leonida-hle` (`xmem`) | game, GPU |
 | R-9 | Cutscenes should look like they do on the console. Run the opening cutscene unattended with `scripts/measure-run.ps1`, look at the shots, and add each glitch you see as a new row, one fix per pull request. R-2 (the room after the cutscene) and R-3 (washed-out frames) may turn out to be part of it. | `leonida-gpu`, `leonida-shader` | game, GPU |
+| R-10 | Lamps and other light sources flash now and then in the world, less often in cutscenes. Seen on an RTX 5080 16 GB, NVIDIA 616.56, Ryzen 7 9800X3D, `base` profile, build `6ee73c9`, 2026-11-27. Find out whether other cards show it, and whether it comes from the missing lamp shadows (R-1) or from dropped draws (R-7). | `leonida-gpu`, `leonida-shader` | game, GPU |
 
 ## Performance: a steady 30 fps
 
