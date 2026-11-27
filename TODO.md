@@ -30,6 +30,7 @@ The goal: a console-like experience on PC. The game starts straight into play, h
 | R-7 | Shaders that don't translate drop their draws. Count them again on this tree with `leonida translate --list` (the upstream counts in the fork notes are from 2026-11-23) and work down the list. Counted 2026-11-26 in the fork notes: the 195 `GS_VoxelizeGeneric` failures drop no draws (geometry programs are never translated); the 5 `CS_TraceShadowRays_*` need view addresses by heap slot from `leonida-gpu`. | `leonida-shader` | game |
 | R-8 | Mapping pool pages in a row as one view made remaps cheaper but broke texture streaming (black or red faces, garbage in 3 of 3 runs). Find out why before trying it again; see P-4. | `leonida-hle` (`xmem`) | game, GPU |
 | R-9 | Cutscenes should look like they do on the console. Run the opening cutscene unattended with `scripts/measure-run.ps1`, look at the shots, and add each glitch you see as a new row, one fix per pull request. R-2 (the room after the cutscene) and R-3 (washed-out frames) may turn out to be part of it. | `leonida-gpu`, `leonida-shader` | game, GPU |
+| R-10 | On cards whose waves have 32 lanes (NVIDIA), console wave64 compute programs that read and write LDS inside one per-lane branch keep 64-lane waves and the card refuses them (a likely cause of a white veil over a cutscene). `LEONIDA_WAVE64_GROUP_WIDE=1` takes such branches in every thread where that is exact; try it in a cutscene run and count what still keeps 64 with `LEONIDA_WAVE_WHY=1`. | `leonida-shader` | game, GPU |
 
 ## Performance: a steady 30 fps
 

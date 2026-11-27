@@ -356,6 +356,28 @@ thread_local! {
     // Equivalent to the existing LEONIDA_WAVE_LOCAL=idiom policy, without changing the
     // process environment while other public-emission tests exercise legacy defaults.
     pub(super) static TEST_STRICT_LOCAL: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    /// A test's choice for [`group_wide_on`].
+    pub(super) static TEST_GROUP_WIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// `LEONIDA_WAVE64_GROUP_WIDE=1`: a console wave64 compute program still stuck at 64-lane
+/// waves on a host of 32 (LDS read and written in one lane branch, cross-lane code where not
+/// every lane runs) gets the per-lane branches around those places taken by every thread of
+/// the group where that is exact (`lower::forced_wide`), in groups of any size, so that its
+/// group barriers stand where every thread arrives. Off by default: new barriers, untried in
+/// a game run.
+fn group_wide_on() -> bool {
+    #[cfg(test)]
+    if let Some(on) = TEST_GROUP_WIDE.get() {
+        return on;
+    }
+    std::env::var_os("LEONIDA_WAVE64_GROUP_WIDE").is_some_and(|v| v == "1")
+}
+
+/// `LEONIDA_WAVE_WHY=1`: why the last program [`translate`] gave on this thread keeps 64-lane
+/// waves, for the log line that names it; `None` without the switch or with fewer lanes.
+pub fn take_wave64_why() -> Option<String> {
+    lower::take_why()
 }
 
 /// Emits a program whose earlier stages already ran. A usable legacy result always wins:
@@ -369,7 +391,11 @@ pub fn emit(
     io: &io::Io,
     res: &resource::Resources,
 ) -> Result<HostShader, ShaderError> {
+    lower::take_why();
     let legacy = emit_legacy(c, native, p, st, io, res);
+    if !matches!(&legacy, Ok((_, Some(64)))) {
+        lower::take_why();
+    }
     let unavailable = matches!(&legacy, Ok((_, Some(64))) | Err(ShaderError::Unsupported { .. }));
     if unavailable && let Some(plan) = independent::admit(native, p, res) {
         let why = std::env::var_os("LEONIDA_WAVE_WHY").is_some();
@@ -382,6 +408,7 @@ pub fn emit(
             }
         }
         if matches!(&again, Ok((_, Some(32)))) {
+            lower::take_why();
             return again.map(|(shader, _)| shader);
         }
     }
@@ -501,7 +528,7 @@ fn emit_legacy(
                 // Still stopped where not every lane runs: the per-lane branches around
                 // those places taken as the console takes them, by the whole wave at once
                 // ([`widen`]), at two group barriers per such branch.
-                if wide_on {
+                if wide_on || group_wide_on() {
                     let bases = [
                         deep.as_ref().map(|f| &f.0),
                         forms[1].1.as_ref().map(|f| &f.0),
@@ -601,7 +628,8 @@ fn emit_legacy(
 /// (`lower::take_needs`), the branches whose regions hold them are widened, and so on until
 /// it translates or a branch cannot be widened. Only where a thread group is one console
 /// wave: with several, the waves of a group would decide differently and a barrier inside
-/// such a branch would wait for threads that never come.
+/// such a branch would wait for threads that never come; unless every thread takes each such
+/// branch one way ([`group_wide_on`]).
 fn widen(
     c: &Container,
     native: &NativeProgram,
@@ -622,9 +650,20 @@ fn widen_with_plan(
         offset: 0,
         what: "wave-wide branches in a thread group of several console waves",
     };
+    // Every thread of the group takes each wave-wide branch the same way (a constant), where
+    // that is exact; else the console wave's decision, exchanged between its two host waves,
+    // which only a group of one console wave can meet on (`LEONIDA_WAVE_WIDE=1`).
+    let one_wave = matches!(native.io,
+        crate::native::StageIo::Cs(cs) if cs.threads.iter().product::<u32>() == 64);
+    let forced = independent_waves.is_none()
+        && group_wide_on()
+        && native.wave64
+        && lower::host_max_wave() == 32
+        && !(one_wave && std::env::var_os("LEONIDA_WAVE_WIDE").is_some_and(|v| v == "1"));
     match native.io {
         crate::native::StageIo::Cs(cs)
             if independent_waves.is_some_and(|plan| plan.original_threads() == cs.threads) => {}
+        crate::native::StageIo::Cs(_) if forced => {}
         // (a program whose waves are the host's meets no one: no barrier, any group)
         crate::native::StageIo::Cs(_) if !(native.wave64 && lower::host_max_wave() == 32) => {}
         crate::native::StageIo::Cs(cs) if cs.threads.iter().product::<u32>() == 64 => {}
@@ -652,7 +691,9 @@ fn widen_with_plan(
             });
         }
         lower::take_needs();
-        let r = emit_program_with_plan(c, native, p, &st, &io, &res, independent_waves);
+        let r = lower::with_forced_wide(forced, || {
+            emit_program_with_plan(c, native, p, &st, &io, &res, independent_waves)
+        });
         let needs = lower::take_needs();
         // (or translated for 64-lane waves still: shared memory read and written where not
         // every lane runs, whose blocks the lowering names too)

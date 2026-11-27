@@ -142,6 +142,16 @@ impl Shader {
         self.translated
             .get_or_init(|| {
                 let done = translate(&self.container);
+                // `LEONIDA_WAVE_WHY=1`: what keeps a console wave64 program at 64-lane waves (only
+                // when translated now, not when the cache had it)
+                if let Some(why) = leonida_shader::emit::take_wave64_why() {
+                    tracing::info!(
+                        stage = self.stage,
+                        hash = %self.hash,
+                        why = %why,
+                        "shader keeps 64-lane waves"
+                    );
+                }
                 // `LEONIDA_SHADER_SAVE=<dir>`: each shader as the title gave it (`.cdxil`) and as
                 // translated (`.dxil`), by the hash crash reports name it with
                 if let Some(dir) = std::env::var_os("LEONIDA_SHADER_SAVE") {

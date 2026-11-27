@@ -274,6 +274,8 @@ struct Lower<'a> {
     /// With `split_lds`, LDS accesses in lane branches: per IR block whether every lane runs
     /// it, and whether the host waves meet at its start and before its exit ([`lds_meetings`]).
     lds_meet: Option<(Vec<bool>, Vec<(bool, bool)>)>,
+    /// With [`with_forced_wide`]: the way every thread takes each wave-wide branch.
+    forced: Option<HashMap<usize, Result<bool, Why>>>,
     /// A console wave64 program run as two host waves of 32 that exchange through LDS: the first
     /// of two exchange dwords, whether the group has no upper half (32 threads or fewer), and per
     /// IR block whether every lane runs it (exchanges need both halves there).
@@ -390,6 +392,37 @@ fn all_lane_blocks(st: &Structured) -> Option<Vec<bool>> {
 /// ([`Structured::wide`]), nor those on scalar conditions. None with an indirect exit.
 fn lane_regions(st: &Structured) -> Option<Vec<(usize, Vec<bool>)>> {
     let n = st.exits.len();
+    let (succ, pdom) = post_dominators(st)?;
+    let mut regions = Vec::new();
+    for (d, e) in st.exits.iter().enumerate() {
+        let LaneExit::Branch { when, .. } = *e else { continue };
+        if st.wide.contains(&d) || st.bools.support(when).iter().all(|a| matches!(a, Atom::Uniform(_))) {
+            continue; // a wave-wide or uniform branch: all lanes go the same way
+        }
+        regions.push((d, region_of(&succ, &pdom, d, n)));
+    }
+    Some(regions)
+}
+
+/// The blocks reachable from branch `d` that do not post-dominate it.
+fn region_of(succ: &[Vec<usize>], pdom: &[Vec<u64>], d: usize, n: usize) -> Vec<bool> {
+    let mut seen = vec![false; n];
+    let mut stack: Vec<usize> = succ[d].clone();
+    while let Some(b) = stack.pop() {
+        if seen[b] || pdom[d][b / 64] >> (b % 64) & 1 == 1 {
+            continue;
+        }
+        seen[b] = true;
+        stack.extend(succ[b].iter().copied());
+    }
+    seen
+}
+
+/// Per block its successors and its post-dominators (bitsets; a virtual exit after every
+/// End). None with an indirect exit.
+#[allow(clippy::type_complexity)]
+fn post_dominators(st: &Structured) -> Option<(Vec<Vec<usize>>, Vec<Vec<u64>>)> {
+    let n = st.exits.len();
     let mut succ: Vec<Vec<usize>> = vec![Vec::new(); n];
     for (b, e) in st.exits.iter().enumerate() {
         match *e {
@@ -426,25 +459,112 @@ fn lane_regions(st: &Structured) -> Option<Vec<(usize, Vec<bool>)>> {
             }
         }
     }
-    let mut regions = Vec::new();
-    for (d, e) in st.exits.iter().enumerate() {
-        let LaneExit::Branch { when, .. } = *e else { continue };
-        if st.wide.contains(&d) || st.bools.support(when).iter().all(|a| matches!(a, Atom::Uniform(_))) {
-            continue; // a wave-wide or uniform branch: all lanes go the same way
-        }
-        // blocks reachable from the lane branch that do not post-dominate it
-        let mut seen = vec![false; n];
-        let mut stack: Vec<usize> = succ[d].clone();
-        while let Some(b) = stack.pop() {
-            if seen[b] || pdom[d][b / 64] >> (b % 64) & 1 == 1 {
-                continue;
-            }
-            seen[b] = true;
-            stack.extend(succ[b].iter().copied());
-        }
-        regions.push((d, seen));
+    Some((succ, pdom))
+}
+
+/// With [`with_forced_wide`]: for each branch the console's wave takes together
+/// ([`Structured::wide`]), the way every thread of the group goes instead (`true`: taken), or
+/// why it cannot. The console skips the branch's region when no lane of the wave wants it;
+/// every thread runs it instead, so that the group barriers in it meet every thread of a group
+/// of several console waves. That changes nothing where the region is acyclic and rejoins at
+/// the branch's post-dominator, every vector instruction in it does nothing in a lane that
+/// does not want the region (EXEC stays its guard), no scalar code in it writes memory, no
+/// `v_writelane` writes a lane by number, and nothing after it reads a scalar, SCC or lane
+/// mask written in it (but an EXEC holding only lanes that wanted the region).
+pub(super) fn forced_wide(p: &Program, st: &Structured) -> HashMap<usize, Result<bool, Why>> {
+    let n = st.exits.len();
+    let Some((succ, pdom)) = post_dominators(st) else {
+        return st.wide.iter().map(|&d| (d, Err("a wave-wide branch with an indirect exit"))).collect();
+    };
+    let mut rpo = vec![usize::MAX; n];
+    for (k, b) in crate::ir::reverse_postorder(&p.blocks).into_iter().enumerate() {
+        rpo[b] = k;
     }
-    Some(regions)
+    let mut read: HashSet<Value> = HashSet::new();
+    for block in &p.blocks {
+        read.extend(block.insts.iter().flat_map(|i| i.reads.iter().map(|r| r.1)));
+        read.extend(block.phis.iter().flat_map(|phi| phi.args.iter().copied()));
+    }
+    let force = |d: usize| -> Result<bool, Why> {
+        let LaneExit::Branch { when, taken, not_taken } = st.exits[d] else {
+            return Err("a wave-wide branch without two ways");
+        };
+        let pd = |s: usize| pdom[d][s / 64] >> (s % 64) & 1 == 1;
+        // the way into the region; a lane wants it where `when` holds as `want` says
+        let (enter, want) = match (pd(taken), pd(not_taken)) {
+            (true, false) => (not_taken, false),
+            (false, true) => (taken, true),
+            _ => return Err("a wave-wide branch that does not skip a region"),
+        };
+        let region = region_of(&succ, &pdom, d, n);
+        let inside = || (0..n).filter(|&b| region[b]);
+        if std::iter::once(d).chain(inside()).any(|b| succ[b].iter().any(|&s| rpo[s] <= rpo[b])) {
+            return Err("a wave-wide branch around a loop");
+        }
+        let mut seen = crate::structure::Meets::default();
+        let mut defined: HashMap<Value, Reg> = HashMap::new();
+        for b in inside() {
+            let block = &p.blocks[b];
+            defined.extend(block.phis.iter().map(|phi| (phi.value, phi.reg)));
+            for (k, i) in block.insts.iter().enumerate() {
+                defined.extend(i.writes.iter().map(|&(r, v)| (v, r)));
+                let name = i.name();
+                const WRITES: [&str; 7] = [
+                    "s_store",
+                    "s_buffer_store",
+                    "s_scratch_store",
+                    "s_atomic",
+                    "s_buffer_atomic",
+                    "s_sendmsg",
+                    "s_setreg",
+                ];
+                if WRITES.iter().any(|s| name.starts_with(s)) {
+                    return Err("a wave-wide branch around scalar code that writes memory");
+                }
+                if name == "v_writelane_b32" {
+                    return Err("a wave-wide branch around v_writelane");
+                }
+                if name.starts_with("s_") {
+                    continue;
+                }
+                let mut runs = vec![(st.reach[b], true), (when, !want)];
+                runs.extend(st.guards[b][k].map(|g| (g, true)));
+                if st.bools.meet_seen(&runs, &mut seen) {
+                    return Err("a wave-wide branch around a vector instruction lanes that skip it run");
+                }
+            }
+        }
+        let left = |v: Value, reg: Reg| -> Result<(), Why> {
+            const WHY: Why = "a wave-wide branch around a scalar, SCC or lane mask read after it";
+            let low = match reg {
+                Reg::V(_) => return Ok(()),
+                Reg::S(crate::ir::EXEC) => v,
+                Reg::S(h) if h == crate::ir::EXEC + 1 => *st.highs.get(&v).ok_or(WHY)?,
+                _ => return Err(WHY),
+            };
+            let bit = *st.masks.get(&low).ok_or(WHY)?;
+            if st.bools.meet(&[(bit, true), (when, !want)]) { Err(WHY) } else { Ok(()) }
+        };
+        for b in (0..n).filter(|&b| !region[b]) {
+            let block = &p.blocks[b];
+            for i in &block.insts {
+                for &(_, v) in &i.reads {
+                    if let Some(&reg) = defined.get(&v) {
+                        left(v, reg)?;
+                    }
+                }
+            }
+            for phi in block.phis.iter().filter(|phi| read.contains(&phi.value)) {
+                for &v in &phi.args {
+                    if let Some(&reg) = defined.get(&v) {
+                        left(v, reg)?;
+                    }
+                }
+            }
+        }
+        Ok(enter == taken)
+    };
+    st.wide.iter().map(|&d| (d, force(d))).collect()
 }
 
 /// The per-lane branches (by block) whose regions hold a block of `needs` (blocks where two
@@ -985,6 +1105,36 @@ thread_local! {
     static LOCAL_WAVES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// See [`with_local_waves_any`].
     static LOCAL_ANY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// See [`with_forced_wide`].
+    static FORCED_WIDE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// See [`take_why`].
+    static WHY_NOTE: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Runs `f` with the branches the console's wave takes together ([`Structured::wide`]) taken
+/// by every thread where that is exact ([`forced_wide`]), and refused where it is not.
+pub(super) fn with_forced_wide<R>(on: bool, f: impl FnOnce() -> R) -> R {
+    let was = FORCED_WIDE.replace(on);
+    let r = f();
+    FORCED_WIDE.set(was);
+    r
+}
+
+/// `LEONIDA_WAVE_WHY=1`: why the programs lowered on this thread since the last call kept
+/// 64-lane waves (diagnostics only; empty without the switch).
+pub(super) fn take_why() -> Option<String> {
+    Some(WHY_NOTE.take()).filter(|w| !w.is_empty())
+}
+
+fn note_why(what: &str) {
+    WHY_NOTE.with_borrow_mut(|w| {
+        if !w.contains(what) {
+            if !w.is_empty() {
+                w.push_str("; ");
+            }
+            w.push_str(what);
+        }
+    });
 }
 
 /// As [`with_local_waves`], with every other use of a lane mask as a number
@@ -1427,7 +1577,35 @@ impl<'a> Lower<'a> {
                         }
                     }
                     why.sort_unstable();
-                    eprintln!("WAVE64-WHY group={group} lds={} [{}]", s.lds_dwords > 0, why.join(", "));
+                    // what kept 64: with the halves exchanging, cross-lane code alone does not
+                    let forced_by = match all_lane_blocks(x.st) {
+                        None => "an indirect exit".to_string(),
+                        Some(all) => {
+                            let at: Vec<String> = p
+                                .blocks
+                                .iter()
+                                .enumerate()
+                                .filter(|&(b, blk)| {
+                                    !all.get(b).copied().unwrap_or(false)
+                                        && blk.insts.iter().any(|i| {
+                                            matches!(i.fields, Fields::Ds { .. })
+                                                && !(i.name().starts_with("ds_swizzle") || i.name().contains("permute"))
+                                        })
+                                })
+                                .map(|(_, blk)| format!("{:#x}", blk.offset))
+                                .collect();
+                            format!("an LDS read and write in one lane-branch region (blocks at {})", at.join(" "))
+                        }
+                    };
+                    let line = format!(
+                        "group={group} lds={} forced-by=[{forced_by}] [{}]",
+                        s.lds_dwords > 0,
+                        why.join(", ")
+                    );
+                    eprintln!("WAVE64-WHY {line}");
+                    if WHY_NOTE.with_borrow(String::is_empty) {
+                        note_why(&line);
+                    }
                 }
             }
             if wave == 32 && x.native.wave64 {
@@ -1577,6 +1755,8 @@ impl<'a> Lower<'a> {
             console_lanes,
             split_lds,
             lds_meet,
+            forced: (FORCED_WIDE.get() && x.independent_waves.is_none() && !x.st.wide.is_empty())
+                .then(|| forced_wide(p, x.st)),
             local: x.independent_waves.is_none() && exchange.is_some() && LOCAL_WAVES.get(),
             local_ok: false,
             local_any: x.independent_waves.is_none() && LOCAL_ANY.get(),
@@ -3900,6 +4080,15 @@ impl<'a> Lower<'a> {
     fn wave_wide(&mut self, b: usize, when: Bool) -> Result<V, Why> {
         const WHY: Why = "a wave-wide branch where not every lane runs";
         let any = self.x.st.wave_any.get(b).copied().flatten().ok_or("a wave-wide branch on a scalar condition")?;
+        if let Some(forced) = &self.forced {
+            let way = forced.get(&b).copied().unwrap_or(Err(WHY));
+            if let Err(why) = way
+                && std::env::var_os("LEONIDA_WAVE_WHY").is_some()
+            {
+                note_why(&format!("every thread through it: {why} at {:#x}", self.x.p.blocks[b].offset));
+            }
+            return Ok(self.s.m.bool(way?));
+        }
         if self.exchange.is_none() && self.halves.is_none() && self.console_lanes && self.mask_data == MaskData::Console {
             // The host's waves are the console's: the wave's own answer. The lanes that are
             // elsewhere have no bit set, as on the console, so "some lane" needs no one but
@@ -5529,3 +5718,7 @@ mod dpp_row_tests;
 #[cfg(test)]
 #[path = "mailbox_tests.rs"]
 mod mailbox_tests;
+
+#[cfg(test)]
+#[path = "group_wide_tests.rs"]
+mod group_wide_tests;
