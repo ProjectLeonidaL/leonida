@@ -234,7 +234,7 @@ pub fn track(
             let mut first_lane = Vec::new();
             let mut offset = Vec::new();
             let mut descriptor = |op: &Operand, role| -> Result<(), ShaderError> {
-                let source = t.descriptor(inst, op, b).map_err(fail)?;
+                let source = t.descriptor(inst, op, site).map_err(fail)?;
                 // A descriptor the code keeps per lane ([`Tracer::lane_copies`])
                 // is the same in every lane: its loop is lowered as it stands
                 // and needs no proof.
@@ -1113,8 +1113,13 @@ impl<'a> Tracer<'a> {
         self.address(lo, hi, extra)
     }
 
-    /// The source of the descriptor operand `op` of `inst`, in block `at`.
-    fn descriptor(&self, inst: &Inst, op: &Operand, at: usize) -> Result<Source, &'static str> {
+    /// The source of the descriptor operand `op` of `inst`, instruction `i` of block `at`.
+    fn descriptor(
+        &self,
+        inst: &Inst,
+        op: &Operand,
+        (at, i): Site,
+    ) -> Result<Source, &'static str> {
         let Operand::Scalar { code, dwords } = *op else {
             return Err("a descriptor not in SGPRs");
         };
@@ -1122,8 +1127,14 @@ impl<'a> Tracer<'a> {
             .map(|k| inst.read(Reg::S(code + k)).map(|v| self.origin(v)))
             .collect::<Option<Vec<_>>>()
             .ok_or("a descriptor not in SGPRs")?;
-        // Only the lanes that reach the access read the descriptor.
+        // Only the lanes that run the access read the descriptor: those that reach it, and
+        // with `LEONIDA_WAVE64_GROUP_WIDE=1` under its guard too (EXEC that still says which
+        // branch the lanes took where reaching no longer does: a skip or early-out left out,
+        // a branch the wave takes together).
         let mut known = Vec::from_iter(self.lanes.map(|l| (l.reach[at], true)));
+        if crate::emit::group_wide_on() {
+            known.extend(self.lanes.and_then(|l| l.guards[at][i]).map(|g| (g, true)));
+        }
         self.classify(&words, &mut Vec::new(), &mut known)
     }
 

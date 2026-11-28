@@ -40,6 +40,39 @@ pub(crate) fn check_phis(m: &Module) {
     }
 }
 
+/// Check that every block holding a group barrier lies on every way from the entry to a
+/// return, so each thread that runs the program arrives at it whatever its data. Returns how
+/// many barriers there are.
+pub(crate) fn barriers_on_every_path(m: &Module) -> usize {
+    let mut count = 0;
+    for (b, block) in m.blocks.iter().enumerate() {
+        let here = block
+            .body
+            .iter()
+            .filter(|&&i| match &m.insts[i as usize].op {
+                Op::Call(f, _) => m.funcs[*f as usize].name == "dx.op.barrier",
+                _ => false,
+            })
+            .count();
+        count += here;
+        if here == 0 || b == 0 {
+            continue;
+        }
+        let mut seen = vec![false; m.blocks.len()];
+        let mut stack = vec![0];
+        while let Some(x) = stack.pop() {
+            if x == b || seen[x] {
+                continue;
+            }
+            seen[x] = true;
+            let ret = matches!(m.blocks[x].term, Some(Term::Ret));
+            assert!(!ret, "a thread can pass block {b}'s barrier by");
+            stack.extend(successors(m.blocks[x].term).iter().copied());
+        }
+    }
+    count
+}
+
 /// Check the initialization and allocation emitted for an authored split-wave program.
 pub(crate) fn check_wave_counter(m: &Module, base: V, barrier_mode: u32) {
     let op = |v| {
