@@ -2,8 +2,9 @@
 
 On an RTX 5060 Laptop (at most 32 lanes per wave) three translated compute programs were refused
 with `E_INVALIDARG`; the debug layer said they ask for 64-lane waves. One of them dispatches
-80x45 groups and writes a 1280x720 R16_UINT image, so leaving it out is a likely cause of a white
-veil over a cutscene (not confirmed). `LEONIDA_WAVE_WHY=1` gave for them: LDS in a group of more
+80x45 groups in the first room every frame, just before a chain of passes that goes down to
+1280x720 and back up to 2560x1440 in R11G11B10_FLOAT; with it left out, both images of that chain
+were black in every frame shot. `LEONIDA_WAVE_WHY=1` gave for them: LDS in a group of more
 than 32 threads with an LDS read and write in one per-lane branch region, some with
 `v_readlane`, `v_mbcnt` or masks read as data.
 
@@ -90,5 +91,19 @@ Authored tests (`emit/group_wide_tests.rs`), on an RTX 5060 Laptop:
 Offline, on the console containers of the first game run (kept outside the repository): the
 program behind the 1280x720 output now translates to 32 lanes with the switch, through the
 existing exact form without early-outs, validates, and the RTX 5060 driver creates its pipeline;
-without the switch it keeps 64 and the driver refuses it as before. Not measured in the game:
-whether the image it writes and the passes that read it now look right.
+without the switch it keeps 64 and the driver refuses it as before.
+
+In the game (release build, `LEONIDA_WAVE64_GROUPS=1 LEONIDA_WAVE64_GROUP_WIDE=1`, cold shader
+cache, 9 minutes): the program's pipeline is created and bound, no frame shot drops it any more,
+and the device was not lost. In a first-room frame shot both images of the chain after it, black
+before (mean 0,0,0), now hold a dark, blurred picture of the room and the yard outside. On
+screen the glare that hid the yard through the window is gone. The white veil at the start of
+the opening cutscene is still there, so it has another cause. The other two programs still keep
+64 lanes and are refused, as above.
+
+Frame time, same build and place (first room, then the yard), 9-minute unattended runs with
+`LEONIDA_WAVE_MORE_SKIPS=1 LEONIDA_WAVE64_GROUPS=1`, median of samples above 2000 draws, warm
+shader cache, the first run after the change discarded, two pairs with the second in reverse
+order: with the switch 285.7 and 332.3 ms (289.9 in an earlier run), without it 334.3 and
+328.6 ms. Runs with the same settings differ by up to about 50 ms, so the frame rate is unchanged
+within noise (about 3 fps either way); the change is for the picture, not for speed.
