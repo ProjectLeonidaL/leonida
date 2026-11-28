@@ -52,6 +52,7 @@ console does (no hitch when something is seen for the first time, no late or blu
 | P-8 | About 24 GB of memory is in use during play. | all | game |
 | P-9 | Cutscenes should hold 30 fps without stutter. Measure the opening cutscene with `scripts/measure-run.ps1` and write down where the frame goes. P-4's page-mapping copies already cost 32 ms of every cutscene frame, so start there. | `leonida-hle`, `leonida-gpu` | game, GPU |
 | P-10 | `LEONIDA_WC_NO_BACK` forgets a write-combined region only when `XMemVirtualAlloc` gives the same addresses out again without the bit: the title's `VirtualFree` goes to the host unseen. Hook it and call `leonida_gpu::title_memory_write_combined(.., false)` for what it releases (foxhound's `title_memory_freed`). See `docs/notes/2026-11-27-wc-no-back.md`. | `leonida-hle`, `leonida-gpu` | - |
+| P-11 | On an 8 GB card the game should stay inside the budget Windows gives it instead of spilling into shared PC memory. On an RTX 5060 Laptop in Series X mode, `main` uses about 6.8 of 7.1 GB on the card plus 5.8 GB of shared memory, and 1,600 passes in a run find no room for a texture (`docs/notes/2026-11-28-p11-8gb-before.md`). Measure Series S against Series X; put the change behind a switch or a profile. | `leonida-gpu`, `gpu-profiles.json` | game, an 8 GB card |
 
 ## Stability
 
