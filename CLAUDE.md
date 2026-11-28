@@ -92,6 +92,17 @@ cargo build --profile diag -p leonida --features diagnostics                   #
 
 If `cargo xtask` fails with "The directory name is invalid" after the folder was moved, run `cargo clean -p xtask`.
 
+Each worktree builds into its own `target`: the run and measure scripts look for `target\release` and `target\diag`
+in their own checkout, so don't point `CARGO_TARGET_DIR` elsewhere.
+
+## Config
+
+- One file is read: the one `LEONIDA_CONFIG` names, else `leonida.toml` in the current folder. Nothing is merged, so
+  each worktree reads its own copy unless `LEONIDA_CONFIG` is set. `gpu-profiles.local.json` is read from the folder
+  of that file.
+- A `LEONIDA_*` variable beats the file's `[graphics]` value, which beats the profiles (`leonida-core::graphics`).
+  `leonida config --graphics` prints what a run would use.
+
 ## Test failures
 
 Clippy passes on `main` since #20. The Windows runner's depth-bounds failure was fixed in #41.
@@ -122,6 +133,9 @@ warning. Fixing an unrelated failure is its own item, not something to fold into
   `docs/fork-notes.md`, which is closed to new entries. One file per pull request keeps notes from conflicting.
 - The first run after a change to `leonida-shader` re-translates every shader (the cache keys on the translator's
   source), so it stutters. Don't measure that run.
+- `-Profile` (`LEONIDA_PROFILE`) replaces the profile list in `leonida.toml` instead of adding to it (`base` always
+  stays), so name every profile you use: compare `-Profile nvidia-8gb` with `-Profile nvidia-8gb,mine`, not with
+  `-Profile mine`. Shader switches are part of the shader cache key too: warm the cache again after changing one.
 
 ## Picture and feel: unattended runs
 
@@ -170,8 +184,14 @@ cargo check --workspace --all-targets --locked
 
 One upstream commit (or a few related ones) per pull request, with the upstream hash in the description.
 
+victory-gta6 replaced its tree with VIctory-NVIDIA's (`5dbf5ce`) after this fork branched off, so its launcher
+switches, ray tracing among them, belong to that tree (UP-5). In ours, `LEONIDA_BVH_BUILDER=1` lights nothing yet
+(R-1, [docs/fork-ray-tracing.md](docs/fork-ray-tracing.md)).
+
 ## Commits and pull requests
 
 - Conventional Commits, short and specific: `fix(gpu): ...`, `feat: ...`, `docs: ...`.
 - Pull requests go to `ProjectLeonidaL/leonida`, branch `main`. Put the TODO ID in the title, say what you tested
   and on which GPU and driver, and say if it was AI-assisted.
+- `cargo xtask policy` checks the files you commit, not commit messages, pull request text or comments. Those hold
+  figures and your own words only: no log lines, and no paths or names from the game.
