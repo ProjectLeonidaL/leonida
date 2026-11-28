@@ -1100,8 +1100,11 @@ impl State {
         // The title address of the buffer view at that dword of the table.
         let address = match self.roots_ref(compute).get(usize::from(slot)) {
             Some(&Root::Table(table)) => crate::descriptor::view(table + u64::from(dword) * 4)
-                .and_then(|view| crate::descriptor::host::buffer_range(&view))
-                .map_or(0, |range| range.0),
+                .and_then(|view| {
+                    crate::descriptor::host::structure_address(&view)
+                        .or_else(|| crate::descriptor::host::buffer_range(&view).map(|r| r.0))
+                })
+                .unwrap_or(0),
             _ => 0,
         };
         if address == 0 {
@@ -1659,12 +1662,11 @@ impl State {
     }
 
     /// For a shader that picks buffers from the view heap by an index it
-    /// computes (SM 6.6 dynamic resources): the GPU address of the heap's
-    /// table of element strides, with every buffer view of the heap given
-    /// its host slot and its memory brought up to date when `list` is
-    /// submitted. Tables tell us which views a draw reads; nothing tells
-    /// us which of the heap's a computed index names, so all of them are
-    /// made ready, once per list.
+    /// computes (SM 6.6 dynamic resources): the GPU address of the stride
+    /// table. Every buffer view of the heap gets its host slot and its memory
+    /// is brought up to date when `list` is submitted. Tables tell us which
+    /// views a draw reads; nothing tells us which of the heap's a computed
+    /// index names, so all are made ready, once per list.
     /// shortcut: the buffers are read, not written: what such a shader
     /// writes through a picked unordered access view stays in the host
     /// copy. A list refreshes them where it first runs such a shader;
@@ -3768,7 +3770,7 @@ impl State {
                     // the record drawn before it.
                     if (6..=8).contains(&why_not) {
                         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                        if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) .is_multiple_of(256) {
+                        if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed).is_multiple_of(256) {
                             let (last_copy, last_offset) = self.last_indirect;
                             tracing::info!(
                                 "a window miss (one in 256): cause {why_not}, kind {kind}, stride {stride}, buffer {} offset {offset:#x} ({} left); the command before it on the list: buffer {last_copy} offset \

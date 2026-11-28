@@ -28,7 +28,7 @@ pub const SLOT_STRIDES: u8 = 255;
 pub const SLOT_STRIDES_COUNT: u32 = 1 << 21;
 /// The [`SLOT_STRIDES`] buffer goes on after its strides: from this dword, two
 /// per heap slot `i` (dwords `SLOT_VIEW_ADDRESSES + 2 * i` and the next), the
-/// title address of the buffer view at slot `i` (0: none or not a buffer).
+/// title address at slot `i` (0: none or no supported address).
 /// Console code reads the address out of a descriptor it picks from the heap
 /// and walks the memory behind it (the shadow-ray tracer's structures).
 pub const SLOT_VIEW_ADDRESSES: u32 = SLOT_STRIDES_COUNT;

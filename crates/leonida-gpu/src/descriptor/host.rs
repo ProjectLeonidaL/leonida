@@ -1672,7 +1672,11 @@ impl HostHeap {
             && index < leonida_shader::emit::SLOT_STRIDES_COUNT
         {
             use leonida_shader::emit::SLOT_VIEW_ADDRESSES;
-            let address = stride.and(view).and_then(buffer_range).map_or(0, |r| r.0);
+            let address = view
+                .and_then(|view| {
+                    structure_address(view).or_else(|| buffer_range(view).map(|r| r.0))
+                })
+                .unwrap_or(0);
             let at = (SLOT_VIEW_ADDRESSES + 2 * index) as usize;
             // SAFETY: inside the mapping; shaders read it while we write (a
             // dword, either value is one the slot had; the address's two
@@ -2186,6 +2190,17 @@ pub(crate) fn buffer_range(view: &View) -> Option<(u64, u64)> {
         base + buffer.FirstElement * element,
         u64::from(buffer.NumElements) * element,
     ))
+}
+
+/// The title address of a ray-tracing acceleration-structure view. Its
+/// descriptor has no resource object; the console stores `Location` in
+/// 256-byte units.
+pub(crate) fn structure_address(view: &View) -> Option<u64> {
+    let View::Shader(_, Some(desc)) = view else {
+        return None;
+    };
+    (desc[1] == D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE.0 as u32)
+        .then(|| (u64::from(desc[3]) | (u64::from(desc[4]) << 32)) >> 8)
 }
 
 /// The title memory the host slot of buffer view `view` is made on
@@ -3145,6 +3160,21 @@ fn null_view(at: D3D12_CPU_DESCRIPTOR_HANDLE) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn structure_addresses_use_the_console_location_units() {
+        let location = 0x1234_5678_9a00u64;
+        let mut desc = [0; 10];
+        desc[1] = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE.0 as u32;
+        desc[3] = location as u32;
+        desc[4] = (location >> 32) as u32;
+        let view = View::Shader(0, Some(desc));
+        assert_eq!(structure_address(&view), Some(location >> 8));
+        assert_eq!(buffer_range(&view), None);
+
+        desc[1] = 0;
+        assert_eq!(structure_address(&View::Shader(0, Some(desc))), None);
+    }
 
     /// A null texture UAV keeps the title's dimension (3D for the world's
     /// wind field), and is 2D when the title names none.
