@@ -7,6 +7,8 @@
 
 #[path = "console_insn_decode.rs"]
 mod decode;
+#[path = "console_insn_patch.rs"]
+mod patch;
 
 use decode::ConsoleOnly;
 use std::cell::Cell;
@@ -343,6 +345,17 @@ unsafe fn clzero_loop15(ctx: &mut CONTEXT, rip: usize, ptr_reg: u8, end_reg: u8)
     Some(true)
 }
 
+/// A wait hint emulated at `rip` (`code` its bytes, `len` its length): counted, and its site
+/// patched if it is the plain three-byte form (`LEONIDA_MWAITX_PATCH=1`). This exception
+/// is emulated all the same; the next run of the site takes none.
+fn patch_hint(rip: usize, code: &[u8], len: usize) {
+    patch::emulated();
+    if let (3, Ok(bytes)) = (len, <[u8; 3]>::try_from(&code[..len])) {
+        // SAFETY: the processor just refused the hint at `rip`, in the title's code.
+        unsafe { patch::site(rip, bytes) };
+    }
+}
+
 /// An illegal instruction at `ctx.Rip`: a console-only one is emulated and stepped over
 /// (`CONTINUE_EXECUTION`); anything else returns 0 (the crash report and the title's handlers
 /// see it).
@@ -371,6 +384,11 @@ pub(crate) unsafe fn emulate(ctx: &mut CONTEXT) -> i32 {
     };
     // SAFETY: `n` bytes at `rip` are readable.
     let code = unsafe { std::slice::from_raw_parts(rip as *const u8, n) };
+    if patch::on() && patch::is_replacement(code) {
+        // Fetched before another thread patched it: it runs again, patched.
+        patch::stale();
+        return CONTINUE_EXECUTION;
+    }
     let Some((what, len)) = decode::decode(code) else { return 0 };
     static SEEN: AtomicU16 = AtomicU16::new(0);
     if first_observation(&SEEN, what) {
@@ -394,9 +412,15 @@ pub(crate) unsafe fn emulate(ctx: &mut CONTEXT) -> i32 {
         ConsoleOnly::Monitorx => {
             KINDS[K_MONITORX].fetch_add(1, Relaxed);
             MONITOR.with(|m| m.set((ctx.Rax as usize, ctx.Rsi)));
+            if patch::on() {
+                patch_hint(rip, code, len);
+            }
         }
         ConsoleOnly::Mwaitx => {
             KINDS[K_MWAITX].fetch_add(1, Relaxed);
+            if patch::on() {
+                patch_hint(rip, code, len);
+            }
             let now = clock_us();
             wait_step(now);
             // The rate line can use this same sample; it needs no second counter read.
@@ -510,7 +534,11 @@ pub(crate) unsafe fn emulate(ctx: &mut CONTEXT) -> i32 {
     ) {
         KINDS[K_OTHER].fetch_add(1, Relaxed);
     }
-    line(wait_at.unwrap_or_else(clock_us));
+    let now = wait_at.unwrap_or_else(clock_us);
+    line(now);
+    if patch::on() {
+        patch::line(now);
+    }
     ctx.Rip += len as u64;
     // How often this runs at all (each one is an exception: a trip into Windows and back).
     let emulated = EMULATED.fetch_add(1, Relaxed) + 1;
