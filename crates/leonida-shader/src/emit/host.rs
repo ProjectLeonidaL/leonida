@@ -612,6 +612,7 @@ fn stub(pixel: bool, outputs: Vec<SigElement>) -> HostShader {
         },
         dxil: s.finish(),
         user_data: Vec::new(),
+        image_bindings: Vec::new(),
         samplers: Vec::new(),
         static_samplers: Vec::new(),
         root_cbvs: Vec::new(),

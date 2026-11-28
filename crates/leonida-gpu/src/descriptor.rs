@@ -335,6 +335,37 @@ pub(crate) fn release_dynamic(heap: usize, first: u32, n: u32) {
     }
 }
 
+/// One private descriptor allocation that a recording's image class relies on.
+/// The title heap also owns the native view resources kept in its slots.
+#[cfg(windows)]
+pub(crate) struct PinnedDynamic {
+    heap: usize,
+    first: u32,
+    count: u32,
+}
+
+#[cfg(windows)]
+impl PinnedDynamic {
+    pub(crate) fn new(heap: &Heap, first: u32, count: u32) -> Self {
+        let heap = std::ptr::from_ref(heap) as usize;
+        object::add_ref(heap as This);
+        Self { heap, first, count }
+    }
+
+    pub(crate) fn contains(&self, heap: usize, first: u32, index: u32) -> bool {
+        self.heap == heap && self.first == first
+            && index.checked_sub(first).is_some_and(|offset| offset < self.count)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for PinnedDynamic {
+    fn drop(&mut self) {
+        release_dynamic(self.heap, self.first, self.count);
+        release(self.heap as This);
+    }
+}
+
 #[cfg(windows)]
 impl Drop for Heap {
     fn drop(&mut self) {
@@ -348,6 +379,23 @@ impl Drop for Heap {
 /// depth).
 fn increment(kind: u32) -> Option<u32> {
     [32, 16, 128, 128].get(kind as usize).copied()
+}
+
+#[cfg(all(windows, test))]
+pub(crate) fn cpu_view_heap_for_test() -> This {
+    #[repr(C)]
+    struct Description(HeapDesc, Placement);
+
+    let desc = Description(
+        HeapDesc { kind: VIEWS_KIND, count: 1, flags: 0, nodes: 0 },
+        Placement { address: 0, size: 0 },
+    );
+    let mut heap = std::ptr::null();
+    assert_eq!(
+        create_heap(std::ptr::null(), &desc.0, &HEAP_IIDS[0], &mut heap),
+        object::S_OK,
+    );
+    heap
 }
 
 /// Device method.

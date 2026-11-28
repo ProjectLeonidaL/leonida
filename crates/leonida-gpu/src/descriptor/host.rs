@@ -31,6 +31,8 @@ pub(crate) struct HostHeap {
     /// released the resource may still be read, and a freed host resource
     /// read there is a GPU page fault (the console reads stale memory).
     kept: Mutex<Vec<Option<ID3D12Resource>>>,
+    /// Numeric classes of final explicit views in private dynamic slots.
+    image_classes: Option<Mutex<std::collections::BTreeMap<u32, UintImageView>>>,
     /// Where the search for free dynamic slots starts, and which are taken
     /// (by lists not yet reset).
     next: Mutex<(u32, Vec<bool>)>,
@@ -980,6 +982,7 @@ impl HostHeap {
             sampler,
             records: Mutex::new(super::records::Records::new(count as usize)),
             kept: Mutex::new(vec![None; (count + extra) as usize]),
+            image_classes: (!sampler && uint_images_enabled()).then(Mutex::default),
             next: Mutex::new((0, vec![false; DYNAMIC as usize])),
             free: std::sync::atomic::AtomicU32::new(DYNAMIC),
             too_long: std::sync::atomic::AtomicU32::new(u32::MAX),
@@ -1128,7 +1131,9 @@ impl HostHeap {
         taken[first..first + n].fill(true);
         self.free.fetch_sub(n as u32, std::sync::atomic::Ordering::Relaxed);
         *next = ((first + n) % DYNAMIC as usize) as u32;
-        Some(self.count + first as u32)
+        let index = self.count + first as u32;
+        self.clear_image_range(index, n as u32);
+        Some(index)
     }
 
     /// The title slots this heap has host slots for; fewer than the title's
@@ -1722,17 +1727,50 @@ impl HostHeap {
             self.free.fetch_add(given, std::sync::atomic::Ordering::Relaxed);
             self.too_long.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
             slots.fill(false);
+            self.clear_image_range(first, (end - at as usize) as u32);
+        }
+    }
+
+    /// The final native numeric class for a private slot and descriptor kind.
+    /// Callers recording a class must also keep the allocation alive.
+    pub(crate) fn image_class(&self, index: u32, uav: bool) -> u32 {
+        use leonida_shader::emit::{IMAGE_CLASS_LEGACY, IMAGE_CLASS_R32_UINT};
+        let Some(classes) = &self.image_classes else {
+            return IMAGE_CLASS_LEGACY;
+        };
+        let kind = if uav { UintImageView::Uav } else { UintImageView::Srv };
+        if classes.lock().unwrap_or_else(|e| e.into_inner()).get(&index) == Some(&kind) {
+            IMAGE_CLASS_R32_UINT
+        } else {
+            IMAGE_CLASS_LEGACY
+        }
+    }
+
+    fn clear_image_range(&self, first: u32, count: u32) {
+        if let Some(classes) = &self.image_classes {
+            let end = first.saturating_add(count);
+            let mut classes = classes.lock().unwrap_or_else(|e| e.into_inner());
+            while let Some((&index, _)) = classes.range(first..end).next() {
+                classes.remove(&index);
+            }
         }
     }
 
     /// Makes slot `index` (a dynamic one) from `view`; a null view if the
     /// host cannot.
     pub(crate) fn make_at(&self, index: u32, view: &View) {
-        let kept = make(view, self.cpu(index));
+        let classes = self.image_classes.as_ref().filter(|_| {
+            index.checked_sub(self.count).is_some_and(|offset| offset < self.dynamic)
+        });
+        let mut image_class = None;
+        let kept = make_with_image_class(view, self.cpu(index), classes.map(|_| &mut image_class));
         if kept.is_none() {
             null_for(view, self.cpu(index));
         }
         self.keep(index, kept.flatten());
+        if let (Some(classes), Some(kind)) = (classes, image_class) {
+            classes.lock().unwrap_or_else(|e| e.into_inner()).insert(index, kind);
+        }
     }
 
     /// Makes slot `index` read nothing: a null view, or a plain sampler.
@@ -1873,6 +1911,11 @@ impl HostHeap {
     }
 
     fn cpu(&self, index: u32) -> D3D12_CPU_DESCRIPTOR_HANDLE {
+        // All uses here obtain native destinations. Clear the old class
+        // before a possible overwrite, including null and buffer views.
+        if index >= self.count && let Some(classes) = &self.image_classes {
+            classes.lock().unwrap_or_else(|e| e.into_inner()).remove(&index);
+        }
         D3D12_CPU_DESCRIPTOR_HANDLE {
             ptr: self.cpu + index as usize * self.step as usize,
         }
@@ -2735,6 +2778,65 @@ fn twin_uav(
 /// Makes the host descriptor for `view` at `at`: the host resource it
 /// views, or `None` if it cannot.
 fn make(view: &View, at: D3D12_CPU_DESCRIPTOR_HANDLE) -> Option<Kept> {
+    make_with_image_class(view, at, None)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UintImageView {
+    Srv,
+    Uav,
+}
+
+fn uint_images_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("LEONIDA_UINT_IMAGES").is_some_and(|v| v == "1"))
+}
+
+fn uint_volume(resource: &D3D12_RESOURCE_DESC) -> bool {
+    resource.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D
+        && resource.Format == DXGI_FORMAT_R32_UINT
+        && resource.Width > 0
+        && resource.Height > 0
+        && resource.DepthOrArraySize > 0
+        && resource.MipLevels == 1
+        && resource.SampleDesc.Count == 1
+        && resource.SampleDesc.Quality == 0
+}
+
+fn uint_volume_srv(resource: &D3D12_RESOURCE_DESC, view: &D3D12_SHADER_RESOURCE_VIEW_DESC) -> bool {
+    if !uint_volume(resource)
+        || resource.Flags.0 & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE.0 != 0
+        || view.Format != DXGI_FORMAT_R32_UINT
+        || view.ViewDimension != D3D12_SRV_DIMENSION_TEXTURE3D
+        || view.Shader4ComponentMapping != D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING
+    {
+        return false;
+    }
+    // SAFETY: the descriptor's dimension selects Texture3D.
+    let view = unsafe { view.Anonymous.Texture3D };
+    view.MostDetailedMip == 0 && matches!(view.MipLevels, 1 | u32::MAX)
+        && view.ResourceMinLODClamp.to_bits() == 0
+}
+
+fn uint_volume_uav(resource: &D3D12_RESOURCE_DESC, view: &D3D12_UNORDERED_ACCESS_VIEW_DESC) -> bool {
+    if !uint_volume(resource)
+        || resource.Flags.0 & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS.0 == 0
+        || view.Format != DXGI_FORMAT_R32_UINT
+        || view.ViewDimension != D3D12_UAV_DIMENSION_TEXTURE3D
+    {
+        return false;
+    }
+    // SAFETY: the descriptor's dimension selects Texture3D.
+    let view = unsafe { view.Anonymous.Texture3D };
+    view.MipSlice == 0 && view.FirstWSlice == 0
+        && (view.WSize == u32::from(resource.DepthOrArraySize) || view.WSize == u32::MAX)
+}
+
+fn make_with_image_class(
+    view: &View,
+    at: D3D12_CPU_DESCRIPTOR_HANDLE,
+    image_class: Option<&mut Option<UintImageView>>,
+) -> Option<Kept> {
     let host = host()?;
     let device = &host.device;
     match view {
@@ -2824,6 +2926,11 @@ fn make(view: &View, at: D3D12_CPU_DESCRIPTOR_HANDLE) -> Option<Kept> {
                         at,
                     )
                 };
+                if let (Some(class), Some(desc)) = (image_class, desc.as_ref()) {
+                    // SAFETY: the retained resource just used for this native descriptor.
+                    *class = uint_volume_srv(&unsafe { texture.GetDesc() }, desc)
+                        .then_some(UintImageView::Srv);
+                }
                 Some(Some(texture.clone()))
             } else if let (Some((data, len)), Some(desc)) =
                 (crate::resource::buffer_bytes(resource), desc)
@@ -2886,6 +2993,11 @@ fn make(view: &View, at: D3D12_CPU_DESCRIPTOR_HANDLE) -> Option<Kept> {
                     at,
                 )
             };
+            if let (Some(class), Some(desc)) = (image_class, desc.as_ref()) {
+                // SAFETY: the retained resource just used for this native descriptor.
+                *class = uint_volume_uav(&unsafe { texture.GetDesc() }, desc)
+                    .then_some(UintImageView::Uav);
+            }
             Some(Some(texture.clone()))
         }
         View::Sampler(words) => {
@@ -2907,7 +3019,7 @@ fn make(view: &View, at: D3D12_CPU_DESCRIPTOR_HANDLE) -> Option<Kept> {
         }
         View::Placed(unordered, resource, desc) => {
             if let Some(view) = placed_texture(view) {
-                return make(&view, at);
+                return make_with_image_class(&view, at, image_class);
             }
             const BUFFER: u32 = 1;
             if resource[0] != BUFFER {
@@ -3145,6 +3257,69 @@ fn null_view(at: D3D12_CPU_DESCRIPTOR_HANDLE) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uint_image_class_requires_an_exact_native_volume_view() {
+        let resource = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE3D,
+            Width: 4,
+            Height: 5,
+            DepthOrArraySize: 6,
+            MipLevels: 1,
+            Format: DXGI_FORMAT_R32_UINT,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Flags: D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+            ..Default::default()
+        };
+        let srv = D3D12_SHADER_RESOURCE_VIEW_DESC {
+            Format: DXGI_FORMAT_R32_UINT,
+            ViewDimension: D3D12_SRV_DIMENSION_TEXTURE3D,
+            Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+            Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                Texture3D: D3D12_TEX3D_SRV {
+                    MostDetailedMip: 0,
+                    MipLevels: u32::MAX,
+                    ResourceMinLODClamp: 0.0,
+                },
+            },
+        };
+        let uav = D3D12_UNORDERED_ACCESS_VIEW_DESC {
+            Format: DXGI_FORMAT_R32_UINT,
+            ViewDimension: D3D12_UAV_DIMENSION_TEXTURE3D,
+            Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                Texture3D: D3D12_TEX3D_UAV { MipSlice: 0, FirstWSlice: 0, WSize: 6 },
+            },
+        };
+        assert!(uint_volume_srv(&resource, &srv));
+        assert!(uint_volume_uav(&resource, &uav));
+
+        let other_resource = D3D12_RESOURCE_DESC { Format: DXGI_FORMAT_R32_TYPELESS, ..resource };
+        assert!(!uint_volume_srv(&other_resource, &srv));
+        assert!(!uint_volume_uav(&other_resource, &uav));
+        let other_resource = D3D12_RESOURCE_DESC { MipLevels: 2, ..resource };
+        assert!(!uint_volume_srv(&other_resource, &srv));
+        assert!(!uint_volume_uav(&other_resource, &uav));
+
+        let mut other_srv = srv;
+        other_srv.Shader4ComponentMapping ^= 1;
+        assert!(!uint_volume_srv(&resource, &other_srv));
+        other_srv = srv;
+        other_srv.Anonymous.Texture3D = D3D12_TEX3D_SRV {
+            MostDetailedMip: 0,
+            MipLevels: 1,
+            ResourceMinLODClamp: 1.0,
+        };
+        assert!(!uint_volume_srv(&resource, &other_srv));
+        let mut other_uav = uav;
+        other_uav.Anonymous.Texture3D = D3D12_TEX3D_UAV {
+            MipSlice: 0,
+            FirstWSlice: 0,
+            WSize: 5,
+        };
+        assert!(!uint_volume_uav(&resource, &other_uav));
+        let no_uav = D3D12_RESOURCE_DESC { Flags: D3D12_RESOURCE_FLAG_NONE, ..resource };
+        assert!(!uint_volume_uav(&no_uav, &uav));
+    }
 
     /// A null texture UAV keeps the title's dimension (3D for the world's
     /// wind field), and is 2D when the title names none.

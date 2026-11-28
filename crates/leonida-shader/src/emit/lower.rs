@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use super::UserData;
+use super::{ImageBinding, UserData};
 use super::bitcode::{Attr, Bin, Cast, Rmw, Tag, Term, V, pred};
 use super::code_table::CodeTable;
 use super::container::SigElement;
@@ -53,6 +53,9 @@ mod interp;
 #[path = "image.rs"]
 mod image;
 
+#[path = "image_class.rs"]
+mod image_class;
+
 #[path = "buffer.rs"]
 mod buffer;
 
@@ -90,6 +93,7 @@ pub(crate) struct Lowered {
     pub root_srvs: Vec<u8>,
     pub root_uavs: Vec<u8>,
     pub user_data: Vec<UserData>,
+    pub image_bindings: Vec<ImageBinding>,
     pub samplers: Vec<[u32; 4]>,
     /// The wave size the shader requires of the host, if any.
     pub wave_size: Option<u32>,
@@ -122,9 +126,21 @@ enum Stop {
 }
 
 pub(crate) fn lower(parts: &Parts) -> Result<Lowered, ShaderError> {
+    // Off by default: only final native R32_UINT volume views opt in at bind time.
+    // The setting is included in the translator's source/environment fingerprint.
+    let enabled = std::env::var_os("LEONIDA_UINT_IMAGES").is_some_and(|v| v == "1");
+    lower_with_image_classes(parts, enabled)
+}
+
+pub(super) fn lower_with_image_classes(
+    parts: &Parts,
+    enabled: bool,
+) -> Result<Lowered, ShaderError> {
     let mut bad = HashMap::new();
     loop {
-        match Lower::new(parts, &bad).run() {
+        let mut lower = Lower::new(parts, &bad);
+        lower.uint_images = enabled;
+        match lower.run() {
             Ok(l) => return Ok(l),
             Err(Stop::Retry(v, why)) => {
                 if bad.insert(v, why).is_some() {
@@ -236,6 +252,8 @@ struct Lower<'a> {
     params: HashMap<Value, (usize, u32)>,
     user_data: Option<V>,
     user_reads: BTreeMap<u32, UserData>,
+    image_bindings: Vec<ImageBinding>,
+    uint_images: bool,
     samplers: Vec<[u32; 4]>,
     descriptors: HashMap<(Site, bool), &'a Source>,
     scalar: HashMap<Site, Address>,
@@ -1538,6 +1556,8 @@ impl<'a> Lower<'a> {
             params: x.res.params.iter().map(|&(v, p, d)| (v, (p, d))).collect(),
             user_data: None,
             user_reads: BTreeMap::new(),
+            image_bindings: Vec::new(),
+            uint_images: false,
             samplers: Vec::new(),
             descriptors: x
                 .res
@@ -2311,6 +2331,12 @@ impl<'a> Lower<'a> {
 
     fn run(mut self) -> Result<Lowered, Stop> {
         self.body()?;
+        if !self.image_bindings.is_empty() && self.s.user_data > 64 {
+            return Err(Stop::Fail(ShaderError::Unsupported {
+                offset: 0,
+                what: "image classes exceed the root constant budget",
+            }));
+        }
         let user_data = self.user_reads.values().copied().collect();
         self.s.samplers = self.samplers.len() as u32;
         let root_cbvs = self.s.root_cbvs.iter().map(|r| r.0).collect();
@@ -2330,6 +2356,7 @@ impl<'a> Lower<'a> {
             wave_ops: self.s.flags & flags::WAVE_OPS != 0,
             dxil: self.s.finish(),
             user_data,
+            image_bindings: self.image_bindings,
             samplers: self.samplers,
         })
     }
@@ -2695,17 +2722,7 @@ impl<'a> Lower<'a> {
         let index = match known {
             Some(index) => index,
             None => {
-                let first = self.user_first();
-                let layout = &self.x.native.layout;
-                let mut index = layout
-                    .iter()
-                    .map(|e| u32::from(e.user_data) + e.sgprs)
-                    .max()
-                    .unwrap_or(0)
-                    .saturating_sub(first);
-                while self.user_reads.contains_key(&index) {
-                    index += 1;
-                }
+                let index = self.next_host_word();
                 self.user_reads.insert(
                     index,
                     UserData {
@@ -2719,6 +2736,19 @@ impl<'a> Lower<'a> {
             }
         };
         self.user_at(index)
+    }
+
+    /// Reserve from the same namespace as guest and all other host-supplied words.
+    fn next_host_word(&self) -> u32 {
+        let mut index = self.x.native.layout.iter()
+            .map(|e| u32::from(e.user_data) + e.sgprs)
+            .max().unwrap_or(0).saturating_sub(self.user_first());
+        while self.user_reads.contains_key(&index)
+            || self.image_bindings.iter().any(|b| b.word == index)
+        {
+            index += 1;
+        }
+        index
     }
 
     /// User-data dword `index`, loaded in the entry block.

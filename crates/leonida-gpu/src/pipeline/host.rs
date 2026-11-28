@@ -9,6 +9,7 @@ use std::ffi::{CStr, CString};
 use std::sync::Arc;
 
 use leonida_shader::emit::{ROOT_CBV_SPACE, SAMPLER_SPACE, USER_DATA_SPACE};
+use leonida_shader::{ResourceType, RootType};
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
@@ -451,7 +452,11 @@ impl HostPipeline {
         let mut samplers = Vec::new();
         let mut bound = Vec::new();
         for &(shader, visibility) in &stages {
-            let t = &shader.translated()?.host;
+            let translated = shader.translated()?;
+            if !image_bindings_match_tables(translated) {
+                return refuse("invalid typed image binding manifest", shaders);
+            }
+            let t = &translated.host;
             let mut stage = Stage {
                 shader: shader.clone(),
                 user_data: None,
@@ -600,6 +605,9 @@ impl HostPipeline {
                 Some(replay)
             }
         };
+        if !matches!(root_dwords(&params), Some(cost) if cost <= 64) {
+            return refuse("host root signature exceeds the 64-DWORD budget", shaders);
+        }
         let (root, root_blob) = match root_signature(&host.device, &params, &samplers, compute.is_some()) {
             Ok(root) => root,
             Err(e) => {
@@ -1028,6 +1036,22 @@ fn code_bytes(code: &D3D12_SHADER_BYTECODE) -> Vec<u8> {
     unsafe { std::slice::from_raw_parts(code.pShaderBytecode.cast::<u8>(), code.BytecodeLength) }.to_vec()
 }
 
+/// A cached class word must refer to the same exact table descriptor as the host bind.
+fn image_bindings_match_tables(translated: &Translated) -> bool {
+    let host = &translated.host;
+    host.image_bindings_valid()
+        && host.image_bindings.iter().all(|binding| {
+            let kind = if binding.uav { ResourceType::Uav } else { ResourceType::Srv };
+            translated.used.iter().any(|view| {
+                view.slot == binding.slot
+                    && view.root == RootType::Table
+                    && view.table_offset_dwords == binding.dword
+                    && view.kind == kind
+                    && view.dwords == 8
+            })
+        })
+}
+
 /// The actual parameters, including one-view tables, determine the DWORD cost.
 fn root_dwords(params: &[D3D12_ROOT_PARAMETER1]) -> Option<u32> {
     params.iter().try_fold(0u32, |sum, p| {
@@ -1049,6 +1073,57 @@ fn root_dwords(params: &[D3D12_ROOT_PARAMETER1]) -> Option<u32> {
 #[cfg(test)]
 mod independent_root_tests {
     use super::*;
+
+    #[test]
+    fn image_class_manifest_refers_to_a_bound_static_table_descriptor() {
+        use leonida_shader::emit::{HostShader, ImageBinding, UserData};
+        use leonida_shader::{HwStage, UsedResource};
+
+        let mut translated = Translated {
+            host: HostShader {
+                stage: HwStage::Cs,
+                dxil: Vec::new(),
+                independent_waves: None,
+                user_data: vec![UserData { index: 3, slot: 2, root: RootType::Table, dword: 0 }],
+                image_bindings: vec![ImageBinding { word: 4, slot: 2, dword: 24, uav: true }],
+                samplers: Vec::new(),
+                static_samplers: Vec::new(),
+                root_cbvs: Vec::new(),
+                root_srvs: Vec::new(),
+                root_uavs: Vec::new(),
+                root_indexed_views: Vec::new(),
+            },
+            used: vec![UsedResource {
+                kind: ResourceType::Uav,
+                root: RootType::Table,
+                table_offset_dwords: 24,
+                lower_bound: 0,
+                stride: 0,
+                dwords: 8,
+                user_data: 3,
+                slot: 2,
+            }],
+            stores: false,
+        };
+        for stride in [0, 4, 8] {
+            translated.used[0].stride = stride;
+            assert!(image_bindings_match_tables(&translated), "stride {stride}");
+        }
+        translated.used[0].kind = ResourceType::Srv;
+        assert!(!image_bindings_match_tables(&translated));
+        translated.used[0].kind = ResourceType::Uav;
+        translated.used[0].dwords = 4;
+        assert!(!image_bindings_match_tables(&translated));
+        translated.used[0].dwords = 8;
+        translated.used[0].table_offset_dwords = 16;
+        assert!(!image_bindings_match_tables(&translated));
+        translated.used[0].table_offset_dwords = 24;
+        translated.host.user_data[0].slot = 1;
+        assert!(!image_bindings_match_tables(&translated));
+        translated.host.user_data[0].slot = 2;
+        translated.host.image_bindings[0].word = 3;
+        assert!(!image_bindings_match_tables(&translated));
+    }
 
     #[test]
     fn independent_constants_use_the_actual_native_parameter_cost() {

@@ -2879,6 +2879,9 @@ static RESOURCE_FUNCTIONS: Table<32> = {
 };
 
 #[cfg(test)]
+mod uint_image_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::object::slot;

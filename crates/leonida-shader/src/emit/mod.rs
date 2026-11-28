@@ -261,6 +261,8 @@ pub struct HostShader {
     pub independent_waves: Option<IndependentWaves>,
     /// The user-data dwords the shader reads.
     pub user_data: Vec<UserData>,
+    /// Bind-time numeric classes for statically resolved ordinary 3D image accesses.
+    pub image_bindings: Vec<ImageBinding>,
     /// Immediate samplers: the four sampler words of `s<n>`.
     pub samplers: Vec<[u32; 4]>,
     /// The same samplers decoded, `s<n>` at position n: the static sampler
@@ -287,9 +289,46 @@ impl HostShader {
             .user_data
             .iter()
             .map(|u| u.index + 1)
+            .chain(self.image_bindings.iter().map(|b| b.word + 1))
             .max()
             .unwrap_or(0);
         n.next_multiple_of(4)
+    }
+}
+
+/// An extra user-data word supplied from the final native descriptor at binding time.
+/// The host may select UINT only for an immutable owned R32_UINT Texture3D view;
+/// unsupported bindings retain the legacy path. These are not guest root parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageBinding {
+    pub word: u32,
+    pub slot: u8,
+    pub dword: u32,
+    pub uav: bool,
+}
+
+pub const IMAGE_CLASS_LEGACY: u32 = 0;
+pub const IMAGE_CLASS_R32_UINT: u32 = 1;
+
+impl HostShader {
+    /// Reject malformed cached manifests before constructing or binding a root signature.
+    pub fn image_bindings_valid(&self) -> bool {
+        self.image_bindings.len() <= 64
+            && self.image_bindings.iter().enumerate().all(|(i, b)| {
+                b.word < 64
+                    && b.slot < 64
+                    && b.dword.is_multiple_of(8)
+                    && b.dword.checked_mul(4).is_some()
+                    && self.user_data.iter().any(|u| {
+                        u.slot == b.slot && u.root == RootType::Table && u.dword == 0
+                    })
+                    && !self.user_data.iter().any(|u| u.index == b.word)
+                    && !self.image_bindings[..i].iter().any(|p| {
+                        p.word == b.word || (p.slot, p.dword) == (b.slot, b.dword)
+                    })
+            })
+            && (self.image_bindings.is_empty()
+                || self.user_data.iter().all(|u| u.index < 64))
     }
 }
 
@@ -788,6 +827,7 @@ fn emit_program_with_plan(
         stage: native.stage,
         dxil: l.dxil,
         user_data: l.user_data,
+        image_bindings: l.image_bindings,
         static_samplers: l
             .samplers
             .iter()
@@ -1175,6 +1215,7 @@ mod tests {
             stage: crate::HwStage::Ps,
             dxil: constant_color(),
             user_data: Vec::new(),
+            image_bindings: Vec::new(),
             samplers: Vec::new(),
             static_samplers: Vec::new(),
             root_cbvs: Vec::new(),
@@ -1188,6 +1229,7 @@ mod tests {
                 stage,
                 dxil: std::fs::read(p).unwrap(),
                 user_data: Vec::new(),
+                image_bindings: Vec::new(),
                 samplers: Vec::new(),
                 static_samplers: Vec::new(),
                 root_cbvs: Vec::new(),
@@ -1479,6 +1521,7 @@ mod tests {
                 stage: super::HwStage::Cs,
                 dxil,
                 user_data: l.user_data,
+                image_bindings: l.image_bindings,
                 samplers: Vec::new(),
                 static_samplers: Vec::new(),
                 root_cbvs: l.root_cbvs,

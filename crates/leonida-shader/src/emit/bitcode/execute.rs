@@ -403,3 +403,93 @@ pub(crate) fn check_wave_mailboxes(m: &Module, output: V, barrier_mode: u32) {
         );
     }
 }
+
+/// Check the actual typed/legacy access diamonds, including their phi predecessors.
+pub(crate) fn check_image_classes(m: &Module, loads: usize, stores: usize) {
+    let mut counts = [0, 0];
+    for (block, body) in m.blocks.iter().enumerate() {
+        for &id in &body.body {
+            let Op::Call(f, args) = &m.insts[id as usize].op else { continue };
+            let name = m.funcs[*f as usize].name.as_str();
+            let store = match name {
+                "dx.op.textureLoad.i32" => false,
+                "dx.op.textureStore.i32" => true,
+                _ => continue,
+            };
+            counts[usize::from(store)] += 1;
+            let (condition, alternate) = m.blocks.iter().find_map(|b| match b.term {
+                Some(Term::CondBr(c, yes, no)) if yes == block => Some((c, no)),
+                _ => None,
+            }).expect("typed access must have its own selected branch");
+            let V::Inst(c) = condition else { panic!("class must be read at bind time") };
+            let Op::Cmp(pred::EQ, _, one) = m.insts[c as usize].op else {
+                panic!("class selects only the exact UINT value");
+            };
+            assert_eq!(m.int_value(one), Some(1));
+            let legacy = if store { "dx.op.textureStore.f32" } else { "dx.op.textureLoad.f32" };
+            let calls: Vec<_> = m.blocks[alternate].body.iter().filter_map(|&id| {
+                let Op::Call(f, a) = &m.insts[id as usize].op else { return None };
+                (m.funcs[*f as usize].name == legacy).then_some(a)
+            }).collect();
+            assert_eq!(calls.len(), 1, "opposite branch must perform one legacy access");
+            assert!(matches!((body.term, m.blocks[alternate].term),
+                (Some(Term::Br(a)), Some(Term::Br(b))) if a == b));
+            if store {
+                assert_eq!(m.int_value(*args.last().unwrap()), Some(15), "typed UAV store mask");
+                assert_eq!(m.int_value(args[5]).map(|v| v as u32), Some(0x8000_0000));
+                assert_eq!(args[6..9], [args[5]; 3], "typed scalar store values");
+                assert_eq!(m.int_value(*calls[0].last().unwrap()), Some(15));
+            }
+        }
+    }
+    assert_eq!(counts, [loads, stores]);
+    check_phis(m);
+}
+
+/// Reproduce the one-component store in an otherwise identical authored module.
+#[cfg(windows)]
+pub(crate) fn force_incomplete_typed_store_mask(m: &mut Module) {
+    let mut stores = m.insts.iter().enumerate().filter_map(|(index, inst)| {
+        let Op::Call(function, args) = &inst.op else { return None; };
+        (m.funcs[*function as usize].name == "dx.op.textureStore.i32").then(|| (index, args[5]))
+    });
+    let (index, x) = stores.next().expect("authored direct typed store");
+    assert!(stores.next().is_none());
+    let undef = m.undef(m.type_of(x));
+    let mask = m.i8(1);
+    let Op::Call(_, args) = &mut m.insts[index].op else { unreachable!() };
+    args[6..9].fill(undef);
+    args[9] = mask;
+}
+
+/// Evaluate the emitted table-index arithmetic for an authored static SMEM descriptor load.
+pub(crate) fn table_index(m: &Module, value: V, table_word: u32) -> u32 {
+    if let Some(n) = m.int_value(value) { return n as u32; }
+    let V::Inst(id) = value else { panic!("expected table-index SSA") };
+    let eval = |v| table_index(m, v, table_word);
+    match &m.insts[id as usize].op {
+        Op::Bin(Bin::Add, a, b) => eval(*a).wrapping_add(eval(*b)),
+        Op::Bin(Bin::LShr, a, b) => eval(*a) >> eval(*b),
+        Op::Extract(row, component) => {
+            let V::Inst(row) = row else { panic!("user-data row") };
+            let Op::Call(f, args) = &m.insts[*row as usize].op else { panic!("user data load") };
+            assert_eq!(m.funcs[*f as usize].name, "dx.op.cbufferLoadLegacy.i32");
+            assert_eq!(m.int_value(args[2]), Some(0));
+            assert_eq!(*component, 0);
+            table_word
+        }
+        other => panic!("unexpected table-index expression: {other:?}"),
+    }
+}
+
+pub(crate) fn check_image_store_exec_guard(m: &Module) {
+    let store_block = m.blocks.iter().position(|b| b.body.iter().any(|&id| {
+        matches!(&m.insts[id as usize].op, Op::Call(f, _)
+            if m.funcs[*f as usize].name == "dx.op.textureStore.i32")
+    })).unwrap();
+    let class_block = m.blocks.iter().position(|b|
+        matches!(b.term, Some(Term::CondBr(_, yes, _)) if yes == store_block)).unwrap();
+    assert!(m.blocks.iter().any(|b| matches!(b.term,
+        Some(Term::CondBr(_, yes, no)) if yes == class_block && no != store_block)),
+        "the numeric class branch must remain inside the original EXEC branch");
+}

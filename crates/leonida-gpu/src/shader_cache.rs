@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use leonida_pipeline::{Cache, Converter};
-use leonida_shader::emit::{HostShader, StaticSampler, UserData};
+use leonida_shader::emit::{HostShader, ImageBinding, StaticSampler, UserData};
 use leonida_shader::resource::RootIndexedView;
 use leonida_shader::{HwStage, RootType};
 
@@ -279,6 +279,12 @@ fn encode(s: &HostShader) -> Vec<u8> {
             word(&mut out, waves.wave_count());
         }
     }
+    word(&mut out, s.image_bindings.len() as u32);
+    for b in &s.image_bindings {
+        for value in [b.word, u32::from(b.slot), b.dword, u32::from(b.uav)] {
+            word(&mut out, value);
+        }
+    }
     out
 }
 
@@ -361,7 +367,18 @@ fn decode(bytes: &[u8]) -> Option<HostShader> {
         }
         _ => return None,
     };
-    r.0.is_empty().then_some(HostShader {
+    let n = r.word()? as usize;
+    if n > 64 { return None; }
+    let mut image_bindings = Vec::with_capacity(n);
+    for _ in 0..n {
+        image_bindings.push(ImageBinding {
+            word: r.word()?,
+            slot: u8::try_from(r.word()?).ok()?,
+            dword: r.word()?,
+            uav: match r.word()? { 0 => false, 1 => true, _ => return None },
+        });
+    }
+    let shader = HostShader {
         stage,
         dxil,
         user_data,
@@ -372,7 +389,9 @@ fn decode(bytes: &[u8]) -> Option<HostShader> {
         root_uavs,
         root_indexed_views,
         independent_waves,
-    })
+        image_bindings,
+    };
+    (r.0.is_empty() && shader.image_bindings_valid()).then_some(shader)
 }
 
 #[cfg(test)]
@@ -407,7 +426,44 @@ mod tests {
                 shift: 5,
             }],
             independent_waves: None,
+            image_bindings: Vec::new(),
         }
+    }
+
+    #[test]
+    fn image_binding_manifest_round_trips_and_rejects_malformed_words() {
+        let mut value = shader();
+        value.image_bindings = vec![ImageBinding { word: 9, slot: 1, dword: 8, uav: true }];
+        assert_eq!(decode(&encode(&value)), Some(value.clone()));
+        assert_eq!(value.user_data_dwords(), 12);
+        for binding in [
+            ImageBinding { word: 64, ..value.image_bindings[0] },
+            ImageBinding { word: 8, ..value.image_bindings[0] },
+            ImageBinding { slot: 64, ..value.image_bindings[0] },
+            ImageBinding { slot: 2, ..value.image_bindings[0] },
+            ImageBinding { dword: 1, ..value.image_bindings[0] },
+            ImageBinding { dword: u32::MAX - 7, ..value.image_bindings[0] },
+        ] {
+            let mut bad = value.clone();
+            bad.image_bindings[0] = binding;
+            assert!(decode(&encode(&bad)).is_none());
+        }
+        for binding in [
+            ImageBinding { word: 10, ..value.image_bindings[0] },
+            ImageBinding { dword: 16, ..value.image_bindings[0] },
+        ] {
+            let mut bad = value.clone();
+            bad.image_bindings.push(binding);
+            assert!(decode(&encode(&bad)).is_none());
+        }
+        let bytes = encode(&value);
+        for cut in 1..=20 { assert!(decode(&bytes[..bytes.len() - cut]).is_none()); }
+        let mut bad = bytes.clone();
+        let n = bad.len();
+        bad[n - 4..].copy_from_slice(&2u32.to_le_bytes());
+        assert!(decode(&bad).is_none());
+        bad[n - 20..n - 16].copy_from_slice(&65u32.to_le_bytes());
+        assert!(decode(&bad).is_none());
     }
 
     #[test]

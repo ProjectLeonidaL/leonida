@@ -23,6 +23,7 @@ impl Lower<'_> {
             return Err("an image access with tfe or lwe");
         }
         let name = inst.name();
+        let class_mask = *dmask;
         // A load or sample with no channel enabled returns the first.
         let dmask = if *dmask == 0 { &1 } else { dmask };
         let site = (b, i);
@@ -80,6 +81,16 @@ impl Lower<'_> {
                 .used_kind(src)
                 .is_some_and(|u| u.kind == ResourceType::Uav);
         let props = (kind | if uav { 0x1000 } else { 0 }, 0x409);
+        if self.uint_images
+            && *dim == 2 && !*a16 && !*d16
+            && ((name == "image_load" && class_mask == 1)
+                || (name == "image_store" && class_mask == 15))
+            && let Some(binding) = self.image_binding(src, uav)
+        {
+            let cs = [addr_val(self, 0)?, addr_val(self, 1)?, addr_val(self, 2)?];
+            return self.classified_image(inst, site, src, binding, cs, guard);
+        }
+
         if let Some(op) = name.strip_prefix("image_atomic_") {
             // GLC returns the old value. DXIL implements subtraction by adding
             // the two's complement of the operand at the same width.

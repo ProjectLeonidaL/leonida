@@ -533,6 +533,9 @@ pub(crate) struct State {
     /// The dynamic slots the list holds: title heap, first, count; given
     /// back when the list has run, is reset or released.
     dynamic: Vec<(usize, u32, u32)>,
+    /// Texture classes recorded in root constants need the exact private
+    /// allocations to survive any later submission of this recording.
+    image_tables: Vec<crate::descriptor::PinnedDynamic>,
     /// Root SRVs bound as one-view tables in this list: (title heap, title
     /// address; 0 for none) → dynamic slot, and the host copy the slot
     /// shows: later draws of the list bring that one up to date, whatever
@@ -558,6 +561,8 @@ impl State {
     /// until the title resets the list. A frame of the opening cutscene
     /// asks for 12,500 tables; held until the resets they ran the 131,072
     /// slots out, and up to 4,900 draws a frame went without their tables.
+    /// A typed image class needs its exact descriptor on every execution,
+    /// so those allocations are held by `image_tables` until the recording goes.
     /// shortcut: a list the title runs a second time without a reset then
     /// reads slots others may have taken (logged once).
     pub(crate) fn tables_done(&mut self) {
@@ -1066,6 +1071,48 @@ impl State {
         }
     }
 
+    fn pin_image_table(&mut self, heap: &crate::descriptor::Heap, first: u32, index: u32) -> bool {
+        let owner = std::ptr::from_ref(heap) as usize;
+        if self.image_tables.iter().any(|p| p.contains(owner, first, index)) {
+            return true;
+        }
+        let Some(position) = self.dynamic.iter().position(|&(allocation_heap, base, count)| {
+            allocation_heap == owner && base == first
+                && index.checked_sub(base).is_some_and(|offset| offset < count)
+        }) else {
+            return false;
+        };
+        let (_, base, count) = self.dynamic.swap_remove(position);
+        self.image_tables.push(crate::descriptor::PinnedDynamic::new(heap, base, count));
+        true
+    }
+
+    fn binding_image_class(
+        &mut self,
+        compute: bool,
+        made: &[(u8, u32)],
+        binding: &leonida_shader::emit::ImageBinding,
+    ) -> Option<u32> {
+        use leonida_shader::emit::IMAGE_CLASS_LEGACY;
+        // A mirrored title slot can be overwritten after recording. Only
+        // tables that this draw already made privately can opt in.
+        let &(_, base) = made.iter().find(|(slot, _)| *slot == binding.slot)?;
+        if !base.is_multiple_of(32) || !binding.dword.is_multiple_of(8) {
+            return None;
+        }
+        let first = base / 32;
+        let index = first.checked_add(binding.dword / 8)?;
+        let &Root::Table(table) = self.roots_ref(compute).get(usize::from(binding.slot))? else {
+            return None;
+        };
+        let heap = self.heap_of(table)?;
+        let class = heap.host()?.image_class(index, binding.uav);
+        if class == IMAGE_CLASS_LEGACY || !self.pin_image_table(heap, first, index) {
+            return None;
+        }
+        Some(class)
+    }
+
     /// A user-data dword the host computes for a translated shader
     /// (`leonida_shader::emit::USER_MEMORY_BASE`, `USER_VIEW_ADDRESS`).
     fn host_word(
@@ -1336,6 +1383,36 @@ impl State {
                         Some(&(_, offset)) => offset,
                         None => self.user_value(compute, u.slot, u.root, u.dword),
                     };
+                }
+                for binding in &t.host.image_bindings {
+                    let Some(value) = values.get_mut(binding.word as usize) else {
+                        return false;
+                    };
+                    *value = self.binding_image_class(compute, &made, binding)
+                        .unwrap_or(leonida_shader::emit::IMAGE_CLASS_LEGACY);
+                    #[cfg(feature = "diagnostics")]
+                    if tracing::enabled!(target: "leonida_gpu::image_class", tracing::Level::DEBUG) {
+                        static UINT: AtomicU64 = AtomicU64::new(0);
+                        static LEGACY: AtomicU64 = AtomicU64::new(0);
+                        let counter = if *value == leonida_shader::emit::IMAGE_CLASS_R32_UINT {
+                            &UINT
+                        } else {
+                            &LEGACY
+                        };
+                        let seen = counter.fetch_add(1, Ordering::Relaxed) + 1;
+                        if seen.is_power_of_two() {
+                            tracing::debug!(
+                                target: "leonida_gpu::image_class",
+                                shader = %stage.shader.hash,
+                                slot = binding.slot,
+                                dword = binding.dword,
+                                uav = binding.uav,
+                                class = *value,
+                                seen,
+                                "image binding class selected"
+                            );
+                        }
+                    }
                 }
                 // SAFETY: an open list; `values` covers the parameter.
                 unsafe {
@@ -4190,6 +4267,36 @@ pub(crate) fn depth_bounds(list: &HostList, min: f32, max: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_image_table_is_owned_once_until_recording_reset() {
+        use crate::descriptor::{Heap, cpu_view_heap_for_test, heap};
+        use crate::object::{add_ref, release_boxed};
+
+        let this = cpu_view_heap_for_test();
+        let owner = this as usize;
+        let heap = heap(this);
+        let mut state = State::default();
+        state.dynamic.push((owner, 256, 4));
+        state.fresh_tables.insert((0x4000, 4, 0), 256);
+        assert!(!state.pin_image_table(heap, 256, 260));
+        assert!(!state.pin_image_table(heap, 257, 257));
+        assert!(state.pin_image_table(heap, 256, 259));
+        let reused = state.fresh_tables[&(0x4000, 4, 0)];
+        assert!(state.pin_image_table(heap, reused, 256));
+        assert!(state.dynamic.is_empty());
+        assert_eq!(state.image_tables.len(), 1);
+
+        state.tables_done();
+        state.tables_done();
+        assert!(state.image_tables[0].contains(owner, 256, 259));
+        // The caller releases its guest reference. Only the recording owns the heap now.
+        assert_eq!(release_boxed::<Heap>(this), 1);
+        assert_eq!(add_ref(this), 2);
+        state.reset(std::ptr::null());
+        assert!(state.image_tables.is_empty());
+        assert_eq!(release_boxed::<Heap>(this), 0);
+    }
 
     #[test]
     fn a_lone_record_opens_a_window_at_the_remembered_step() {
