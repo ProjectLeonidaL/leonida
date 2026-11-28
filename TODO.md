@@ -88,6 +88,7 @@ console does (no hitch when something is seen for the first time, no late or blu
 | C-3 | `cargo fmt --check` reports about 1,420 differences. Run `cargo fmt` once, in a pull request of its own, at a moment when no other pull request is open (it touches almost every file), then add the check to CI. | all | - |
 | C-4 | 163 `shortcut:` markers where the code approximates the console (79 in `leonida-gpu`, 55 in `leonida-shader`, 23 in `leonida-hle`, 4 in `leonida-formats`, 2 in `leonida-loader`). Replace them with the console's real behaviour, one per pull request. | all | game |
 | C-5 | Some style lints are switched off for this fork in the workspace `Cargo.toml`. Turn them back on and tidy the code they flag. | `Cargo.toml` | - |
+| C-7 | Names and hashes of the title's shader programs are still in the tree: words shaped like its program names in 10 source files and 3 docs, and its programs' hashes in two tables of `leonida-gpu/src/draw.rs` that pick programs by hash. Take out the ones that are the title's; where code finds a program by name or hash, read it at run time from a `LEONIDA_*` switch, as UP-5's `LEONIDA_AMBIENT_PROGRAMS` does. Where they are: [note](docs/notes/2026-11-28-title-names-in-comments.md). | all | `-` (`game` for the bake table) |
 
 ## Upstream
 

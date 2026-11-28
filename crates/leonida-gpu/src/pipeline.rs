@@ -321,15 +321,14 @@ pub(crate) static WALKS_HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::
 /// waves does not manage yet). The title's ray-traced passes run all the
 /// same: 64 programs of its shader pack test rays against structure nodes
 /// (ray-traced shadows, screen probes, reflections, the irradiance cache;
-/// one of them, `CS_IrradianceCache_ShadowTrace_WithFar` f607780aa8e502d0,
-/// from the first world frame on in every run). Each walks, in a loop the
+/// one of them from the first world frame on, in every run). Each walks, in a loop the
 /// title bounds at 65,535 steps a wave, whatever bytes lie where the
 /// structure would be: what it returns is not a picture of the scene, and
 /// how long it runs depends on those bytes. Upstream's pull request 2311
 /// measured a card hung in exactly that dispatch on an NVIDIA card, every
 /// run, and both card losses of ours since the draw windows' own fault was
 /// fixed (runs 208 and 224) came within a second of the first use of the
-/// programs that shade those rays' hits (`CS_RaytracingResolve`).
+/// programs that shade those rays' hits.
 ///
 /// With the switch such a dispatch is dropped until the builder has run
 /// whole. What the passes would have written stays as the title left it
