@@ -43,7 +43,6 @@ The goal: a console-like experience on PC. The game starts straight into play, h
 | P-6 | Translated shaders are too expensive: about 50 ms of a 97 ms frame are the title's own passes as translated. With every pass of the layer's gone, the first rooms would still be near 20 fps. On an RTX 3080, after #23 took the layer's own hash and compare passes from about 21 to 3.6 ms of card time a frame, the title's passes are about 95 ms of it. | `leonida-shader` | game, GPU |
 | P-8 | About 24 GB of memory is in use during play. | all | game |
 | P-9 | Cutscenes should hold 30 fps without stutter. Measure the opening cutscene with `scripts/measure-run.ps1` and write down where the frame goes. P-4's page-mapping copies already cost 32 ms of every cutscene frame, so start there. | `leonida-hle`, `leonida-gpu` | game, GPU |
-| P-10 | `LEONIDA_WC_NO_BACK` forgets a write-combined region only when `XMemVirtualAlloc` gives the same addresses out again without the bit: the title's `VirtualFree` goes to the host unseen. Hook it and call `leonida_gpu::title_memory_write_combined(.., false)` for what it releases (foxhound's `title_memory_freed`). See `docs/notes/2026-11-27-wc-no-back.md`. | `leonida-hle`, `leonida-gpu` | - |
 
 ## Stability
 

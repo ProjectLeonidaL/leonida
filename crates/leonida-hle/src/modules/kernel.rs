@@ -285,6 +285,13 @@ pub extern "system" fn TerminateProcess(process: *mut c_void, code: u32) -> i32 
     host::terminate_process(process, code)
 }
 
+/// `VirtualFree` is the title's only way out of memory `xmem` noted: hook it
+/// and forget the write-combined region it releases (P-10), the host doing
+/// the actual freeing.
+pub extern "system" fn VirtualFree(address: *mut c_void, size: usize, kind: u32) -> i32 {
+    host::virtual_free(address, size, kind)
+}
+
 /// The pseudo handle of one of our modules: its address, never a real image.
 fn handle(m: &HleModule) -> *mut c_void {
     m as *const HleModule as *mut c_void
@@ -382,6 +389,7 @@ pub(crate) fn module() -> HleModule {
             hle_export!(_invalid_parameter_noinfo_noreturn),
             hle_export!(TerminateProcess),
             hle_export!(SetUnhandledExceptionFilter),
+            hle_export!(VirtualFree),
         ],
     }
 }
@@ -401,6 +409,9 @@ mod host {
     use windows_sys::Win32::System::LibraryLoader::{
         DisableThreadLibraryCalls, GetModuleFileNameA, GetModuleFileNameW, GetModuleHandleA,
         GetModuleHandleW, GetProcAddress, LoadLibraryExA, LoadLibraryExW,
+    };
+    use windows_sys::Win32::System::Memory::{
+        MEM_DECOMMIT, MEM_RELEASE, MEMORY_BASIC_INFORMATION, VirtualFree, VirtualQuery,
     };
     use windows_sys::Win32::System::Threading::TerminateProcess;
 
@@ -484,6 +495,38 @@ mod host {
     pub(super) fn terminate_process(process: *mut c_void, code: u32) -> i32 {
         // SAFETY: see above.
         unsafe { TerminateProcess(process, code) }
+    }
+
+    /// The title's `VirtualFree`: free on the host, and tell the GPU that a
+    /// write-combined region it keeps in its copies was released (P-10).
+    pub(super) fn virtual_free(address: *mut c_void, size: usize, kind: u32) -> i32 {
+        // `MEM_RELEASE` frees the whole region, with `dwSize` 0 by contract, and
+        // only before the free can we still read its extent back: a released
+        // region is already gone when we would query it. `MEM_DECOMMIT` keeps the
+        // region reserved (only a sub-range is decommitted), so it stays noted.
+        let released = if kind & (MEM_RELEASE | MEM_DECOMMIT) == MEM_RELEASE {
+            let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+            let queried = unsafe {
+                VirtualQuery(address, &mut info, std::mem::size_of::<MEMORY_BASIC_INFORMATION>())
+                    != 0
+            };
+            // A size the title gives us wins; otherwise the region's own extent.
+            if size != 0 {
+                Some(size)
+            } else {
+                (queried && info.State != 0).then_some(info.RegionSize)
+            }
+        } else {
+            None
+        };
+        let freed = unsafe { VirtualFree(address, size, kind) };
+        // let-chains: only forget the region when the host freed it AND we
+        // captured a live extent (a `MEM_RELEASE` with no size and a dead query
+        // has no extent to forget — leave the note for the next alloc to trim).
+        if freed != 0 && let Some(released) = released {
+            leonida_gpu::title_memory_write_combined(address as usize, released, false);
+        }
+        freed
     }
 
     pub(super) fn set_unhandled_exception_filter(filter: extern "system" fn(*const c_void) -> i32) {
@@ -579,6 +622,10 @@ mod host {
 
     pub(super) fn terminate_process(_: *mut c_void, code: u32) -> i32 {
         std::process::exit(code as i32)
+    }
+
+    pub(super) fn virtual_free(_: *mut c_void, _: usize, _: u32) -> i32 {
+        0
     }
 
     pub(super) fn set_unhandled_exception_filter(_: extern "system" fn(*const c_void) -> i32) {}
