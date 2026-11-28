@@ -10,7 +10,8 @@ game's x86-64 code runs unchanged inside our process; we supply the console plat
 runtime services, a Direct3D 12 back end and a shader recompiler (console GPU code to DXIL, on first use, cached).
 
 The goal is a console-like experience on PC: straight into play, a steady 30 fps (33 ms a frame) or better, the
-console's picture, no stutter, no crashes.
+console's picture, shaders and textures that load in as smoothly as on the retail console (no hitch the first time
+something is seen, no late or blurry textures), no stutter, no crashes.
 
 **For everyone's PC, not just yours.** Many projects like this one are tuned on the developer's own machine and
 run badly everywhere else. This one aims to run as well as it can on whatever hardware the user has, and to be usable
@@ -49,6 +50,9 @@ It is a fork of [fxceless/victory-gta6](https://github.com/fxceless/victory-gta6
 - Claim it by opening a draft pull request with the ID in the title (`P-3: ...`) as soon as you start.
 - One item, one pull request. Touch only the files the item needs. The pull request that finishes an item deletes
   its row in `TODO.md` and edits no other row. New work goes in as a new row with the next free ID; never renumber.
+- A pull request that moves an item forward without finishing it may edit that item's row only: new figures and a
+  link to its note. The findings themselves go in the note under [docs/notes/](docs/notes/), never in the row.
+  Keeping each pull request to its own row is what keeps `TODO.md` from conflicting.
 - Read the code, [docs/notes/](docs/notes/) and the older [docs/fork-notes.md](docs/fork-notes.md) before guessing:
   many things were already measured there. Quote where a number comes from, or say it is a guess.
 
@@ -128,6 +132,9 @@ warning. Fixing an unrelated failure is its own item, not something to fold into
 
 - Measure on your own machine before and after, in the same scene, and put both figures in the pull request with
   your CPU, GPU and driver. Most numbers in the docs come from one RTX 4070.
+- Every figure you write, in `TODO.md`, a note or a pull request, names the card, the resolution, the scene and
+  where it came from: a frame time measured on one card says little about another. If the source doesn't name the
+  card, say so. Shares of a frame ("about half the card's time") carry over better than ms.
 - Post figures, never log files: logs can quote game data.
 - Write what you measured or changed in a new file under `docs/notes/` ([how](docs/notes/README.md)), not in
   `docs/fork-notes.md`, which is closed to new entries. One file per pull request keeps notes from conflicting.
@@ -166,6 +173,9 @@ on an RTX 3080.
 
 ## Upstream
 
+"VIctory" means [Marvisak/VIctory](https://github.com/Marvisak/VIctory), the original project. Many forks on GitHub
+share the name; the other forks worth porting from are listed by owner in the Upstream section of `TODO.md`.
+
 A fresh clone has neither upstream as a remote. Add them once:
 
 ```powershell
@@ -183,6 +193,25 @@ cargo check --workspace --all-targets --locked
 ```
 
 One upstream commit (or a few related ones) per pull request, with the upstream hash in the description.
+The forks in `TODO.md` work the same way: add the fork as a remote, cherry-pick (or apply its patch), rename.
+
+A commit is worth porting when it does at least one of these, and the pull request shows it:
+
+- fixes a crash, a hang or a device loss;
+- brings the picture closer to the console (a missing effect, a black or wrong surface);
+- shortens the frame or removes stutter, measured before and after on your card;
+- makes the game easier to start for someone who can't code (a clearer error, a check at start).
+
+And it follows these rules:
+
+- It makes no card slower or less stable. A switch that helps one vendor or card goes into a matching profile in
+  `gpu-profiles.json`, not `base`. If you could test on one card only, say which, and ask someone with another
+  vendor's card to check before it is turned on by default.
+- Anything that leaves console work out to gain speed (ray tracing off, effects dropped, the 30 fps interval
+  lifted) goes behind a `LEONIDA_*` switch, off by default, in an opt-in profile.
+- Leave out downloaders, launchers, overlays, telemetry, anything that reaches the network, and Python files.
+- Skip pure refactors and renames in code this fork has changed: they cost conflicts and change nothing a player
+  sees.
 
 victory-gta6 replaced its tree with VIctory-NVIDIA's (`5dbf5ce`) after this fork branched off, so its launcher
 switches, ray tracing among them, belong to that tree (UP-5). In ours, `LEONIDA_BVH_BUILDER=1` lights nothing yet

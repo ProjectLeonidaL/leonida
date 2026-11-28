@@ -4,8 +4,9 @@ Reports from two testers from the report form, as they gave them. Nothing here q
 axel_cf attached a file to their first report; it is not added here (logs can quote game data).
 
 - axel_cf: RTX 3060 12 GB (12,115 MB), Core i5-10400F, 16 GB RAM, Windows 11 Pro 26H2 build
-  26300 (given with run 3). Driver 621.01 for runs 1 and 2, 621.40 for run 3. Build unknown (no
-  git).
+  26300 (given with run 3). Driver 621.01 for runs 1 and 2, 621.40 for runs 3 to 5. Build unknown
+  for runs 1 to 3 (no git); runs 4 and 5 used a build with the S-6 fix
+  ([S-6 note](2026-11-27-cbv-64k-limit.md)).
 - Lepsy06: RTX 3060 12 GB (12,108 MB), Core i5-13600KF, 32 GB RAM, driver 621.01, Windows 11 Pro
   for Workstations 25H2 build 26200. Build unknown (no git). `base` applied (the eight speed
   switches on), shader warm-up done, prison hall.
@@ -42,7 +43,7 @@ Driver 621.01 is older than the 621.14 to 621.40 on the other cards reported so 
   message (`crates/leonida-gpu/src/host.rs`) says "a command recorded into it was invalid" for
   every code, so here it points the wrong way. This PC has 16 GB of RAM, and the RTX 3060 Ti
   8 GB with 16 GB in [../fork-notes.md](../fork-notes.md) used 22 GB of private memory in the
-  first room, so running out of memory fits (a guess: no memory figures came with the report).
+  first room, so running out of memory fits. The tester later gave RAM at 97% for run 3.
 - So this card has lost the device on both drivers, 621.01 and 621.40, with `base` and after the
   warm-up. Lepsy06's report gives no reason, and axel_cf's points to memory, not to the constant
   buffer view size that an RTX 5080 run hit (reason invalid call). The two crashes may not share
@@ -53,3 +54,23 @@ Driver 621.01 is older than the 621.14 to 621.40 on the other cards reported so 
   run each, and run 3 crashed, so it doesn't show the newer driver is slower.
 - Nothing here says what any switch does on this card: every run with known switches had the same
   ones.
+
+## With the S-6 fix (axel_cf, runs 4 and 5)
+
+Both runs on driver 621.40, with a build that caps constant buffer views at 64 KiB. Only the
+figures below were given: no frame counts, spans or longest frames.
+
+- Run 4 ended with an access violation (`0xC0000005`) in the opening cutscene. The tester saw a
+  white flash. Its crashes.log shows a write to address 0 in the title image, on a title thread,
+  with no Leonida frames on the stack. That fits an allocation that failed and a null pointer the
+  title went on to use (a guess: the log doesn't say which allocation).
+- Run 5 lost the device (`0x887A0005`) in the flashback, the same place as run 3 before the fix,
+  with a median frame of 311 ms (run 3: 282 ms; the span of the 311 ms was not given). Its last
+  error is the same as run 3's: a host command list that did not close, with `0x8007000E`, and
+  the localized system text says there is not enough memory.
+- The page file is system managed, and the PC has 16 GB of RAM.
+- So on this PC the crashes are memory, not the constant buffer view S-6 fixed: both runs with the
+  fix failed, one of them with the same out-of-memory error as before it.
+- Lepsy06 (32 GB of RAM, same card) has not run a build with S-6 yet, and is the useful S-6 test
+  on this card: a run there would show whether S-6 stops their removal, and whether the removal
+  follows the amount of RAM.
